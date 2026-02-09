@@ -23,6 +23,7 @@ public class HmacAuthMiddleware
     private readonly RequestDelegate _next;
     private readonly ILogger<HmacAuthMiddleware> _logger;
     private readonly string _hmacSecret;
+    private readonly bool _devBypass;
 
     private const string TIMESTAMP_HEADER = "X-Vibe-Timestamp";
     private const string SIGNATURE_HEADER = "X-Vibe-Signature";
@@ -44,11 +45,20 @@ public class HmacAuthMiddleware
     public HmacAuthMiddleware(
         RequestDelegate next,
         ILogger<HmacAuthMiddleware> logger,
+        IHostEnvironment environment,
+        IConfiguration configuration,
         VibeSecretConfiguration secretConfig)
     {
         _next = next;
         _logger = logger;
         _hmacSecret = secretConfig.HmacSecret;
+        _devBypass = environment.IsDevelopment()
+            && configuration.GetValue<bool>("VibeSQL:DevBypassHmac", false);
+
+        if (_devBypass)
+        {
+            logger.LogWarning("VIBESQL_AUTH: Development HMAC bypass is ENABLED - do NOT use in production");
+        }
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -57,6 +67,20 @@ public class HmacAuthMiddleware
 
         if (IsPublicPath(path))
         {
+            await _next(context);
+            return;
+        }
+
+        // Development bypass - skip HMAC validation for Swagger/local testing
+        if (_devBypass)
+        {
+            var devTier = context.Request.Headers[CLIENT_TIER_HEADER].FirstOrDefault();
+            if (!string.IsNullOrEmpty(devTier))
+            {
+                context.Items["ClientTier"] = devTier;
+            }
+
+            _logger.LogDebug("VIBESQL_AUTH: Dev bypass - skipping HMAC for {Path}", path);
             await _next(context);
             return;
         }

@@ -1,6 +1,0 @@
-<Solution>
-  <Folder Name="/src/">
-    <Project Path="src/VibeSQL.Core/VibeSQL.Core.csproj" />
-    <Project Path="src/VibeSQL.Server/VibeSQL.Server.csproj" />
-  </Folder>
-</Solution>

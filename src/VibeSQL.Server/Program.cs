@@ -5,33 +5,10 @@ using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
 using VibeSQL.Core.Models;
 using VibeSQL.Core.Query;
-using VibeSQL.Core.Services;
 using VibeSQL.Server.Middleware;
+using VibeSQL.Server.Swagger;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// ========================================
-// Optional: Azure App Configuration + Key Vault
-// Set VibeSQL:UseKeyVault=true to enable
-// ========================================
-var useKeyVault = builder.Configuration.GetValue<bool>("VibeSQL:UseKeyVault", false);
-
-if (useKeyVault)
-{
-    // Uncomment and configure for your key vault provider:
-    // var azureAppConfigConnection = builder.Configuration["AzureAppConfig:ConnectionString"];
-    // if (!string.IsNullOrEmpty(azureAppConfigConnection))
-    // {
-    //     builder.Configuration.AddAzureAppConfiguration(options =>
-    //     {
-    //         options.Connect(azureAppConfigConnection)
-    //             .ConfigureKeyVault(kv =>
-    //             {
-    //                 kv.SetCredential(new Azure.Identity.DefaultAzureCredential());
-    //             });
-    //     });
-    // }
-}
 
 // ========================================
 // Serilog Logging
@@ -61,39 +38,20 @@ builder.Services.AddHttpContextAccessor();
 
 // ========================================
 // Auth Secret Configuration
-// Loads HMAC secret from key vault or config/environment
+// Loads HMAC secret from config or environment variable.
+// Key vault integration (CryptAply) will provide key governance
+// and compliance - see IKeyVaultService for the integration point.
 // ========================================
-VibeSecretConfiguration secretConfiguration;
-
-if (useKeyVault)
+var secretConfiguration = new VibeSecretConfiguration
 {
-    builder.Services.AddSingleton<IKeyVaultService, AzureKeyVaultService>();
-    var keyVaultService = builder.Services.BuildServiceProvider().GetRequiredService<IKeyVaultService>();
-
-    var hmacSecretName = builder.Configuration["VibeSQL:HmacSecretName"] ?? "VibeHmacSecret";
-    var hmacSecret = await keyVaultService.GetSecretAsync(hmacSecretName);
-
-    secretConfiguration = new VibeSecretConfiguration
-    {
-        HmacSecretName = hmacSecretName,
-        HmacSecret = hmacSecret
-    };
-    Log.Information("VIBESQL_STARTUP: Loaded HMAC secret from key vault");
-}
-else
-{
-    // Load from appsettings or environment variable
-    secretConfiguration = new VibeSecretConfiguration
-    {
-        HmacSecretName = "VibeHmacSecret",
-        HmacSecret = builder.Configuration["VibeSQL:HmacSecret"]
-            ?? Environment.GetEnvironmentVariable("VIBESQL_HMAC_SECRET")
-            ?? throw new InvalidOperationException(
-                "HMAC secret not configured. Set VibeSQL:HmacSecret in appsettings, " +
-                "VIBESQL_HMAC_SECRET environment variable, or enable key vault with VibeSQL:UseKeyVault=true")
-    };
-    Log.Information("VIBESQL_STARTUP: Loaded HMAC secret from configuration");
-}
+    HmacSecretName = builder.Configuration["VibeSQL:HmacSecretName"] ?? "VibeHmacSecret",
+    HmacSecret = builder.Configuration["VibeSQL:HmacSecret"]
+        ?? Environment.GetEnvironmentVariable("VIBESQL_HMAC_SECRET")
+        ?? throw new InvalidOperationException(
+            "HMAC secret not configured. Set VibeSQL:HmacSecret in appsettings " +
+            "or VIBESQL_HMAC_SECRET environment variable.")
+};
+Log.Information("VIBESQL_STARTUP: Loaded HMAC secret from configuration");
 
 builder.Services.AddSingleton(secretConfiguration);
 
@@ -121,11 +79,23 @@ Features:
 - KV/secret managed HMAC authentication
 - Tier-based rate limiting and timeouts
 - JSONB support for flexible schemas
-- Built-in query limits and security",
+- Built-in query limits and security
+
+## Authentication
+
+All endpoints (except /health) require HMAC authentication via three headers:
+
+- **X-Vibe-Timestamp**: Unix epoch seconds (must be within 5 minutes)
+- **X-Vibe-Signature**: HMAC-SHA256 of `{timestamp}|{METHOD}|{path}` using the shared secret
+- **X-Vibe-Service**: Identifier of the calling service (for logging)
+
+Optional: **X-Vibe-Client-Tier** sets the tier for timeout/rate limits (Free, Starter, Pro, Enterprise).
+
+In development, set `VibeSQL:DevBypassHmac=true` to skip HMAC validation for local testing.",
         Contact = new OpenApiContact
         {
             Name = "VibeSQL",
-            Url = new Uri("https://github.com/PayEz-Net/vibesql-server")
+            Url = new Uri("https://github.com/vibesql/vibesql-server")
         },
         License = new OpenApiLicense
         {
@@ -133,6 +103,33 @@ Features:
             Url = new Uri("https://www.apache.org/licenses/LICENSE-2.0")
         }
     });
+
+    // HMAC security scheme definitions
+    c.AddSecurityDefinition("X-Vibe-Signature", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.ApiKey,
+        In = ParameterLocation.Header,
+        Name = "X-Vibe-Signature",
+        Description = "HMAC-SHA256 signature of \"{timestamp}|{METHOD}|{path}\" using the shared secret (base64)"
+    });
+
+    c.AddSecurityDefinition("X-Vibe-Timestamp", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.ApiKey,
+        In = ParameterLocation.Header,
+        Name = "X-Vibe-Timestamp",
+        Description = "Unix epoch timestamp (seconds). Must be within 5 minutes of server time."
+    });
+
+    c.AddSecurityDefinition("X-Vibe-Service", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.ApiKey,
+        In = ParameterLocation.Header,
+        Name = "X-Vibe-Service",
+        Description = "Calling service identifier (e.g. 'vibe-app', 'admin-portal')"
+    });
+
+    c.OperationFilter<HmacAuthOperationFilter>();
 });
 
 // CORS
