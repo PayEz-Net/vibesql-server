@@ -27,9 +27,9 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 
 ### Tech Stack
 
-- **.NET 8.0** — Modern C# with ASP.NET Core
+- **.NET 9.0** — Modern C# with ASP.NET Core
 - **PostgreSQL 16+** — Native JSONB support
-- **Entity Framework Core 6.0** — Code-first migrations
+- **Entity Framework Core 9.0** — Code-first migrations
 - **Azure Key Vault** — Secret management (configurable)
 
 ---
@@ -38,7 +38,7 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 
 ### Prerequisites
 
-- .NET 8.0 SDK
+- .NET 9.0 SDK
 - PostgreSQL 16+ (local or remote)
 - Azure Key Vault (optional, for KV/secret auth)
 
