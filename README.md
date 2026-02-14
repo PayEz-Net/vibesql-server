@@ -410,13 +410,13 @@ dotnet test
 
 ## Comparison
 
-| Feature | VibeSQL Micro | VibeSQL Server | VibeSQL Cloud |
+| Feature | VibeSQL Micro | VibeSQL Server | VibeSQL Cloud (Planned) |
 |---------|---------------|----------------|---------------|
 | **Use Case** | Local dev | Production self-hosted | Managed cloud |
 | **Multi-tenant** | ❌ | ✅ | ✅ |
-| **Auth** | ❌ | ✅ KV/secret managed | ✅ Full OAuth |
+| **Auth** | ❌ | ✅ HMAC secret-based | ✅ Full OAuth |
 | **Schema evolution** | ❌ | ✅ Lazy migration | ✅ Lazy migration |
-| **Rate limiting** | ❌ | ✅ Tier-based | ✅ Tier-based |
+| **Rate limiting** | ❌ | ⚠️ Tier timeouts | ✅ Tier-based |
 | **Audit logs** | ❌ | ✅ Full trail | ✅ Full trail |
 | **Managed hosting** | ❌ | ❌ | ✅ |
 | **Cost** | Free | Free (self-host) | Paid plans |
