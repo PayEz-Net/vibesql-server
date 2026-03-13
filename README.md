@@ -160,25 +160,37 @@ Complete audit trail for compliance:
 }
 ```
 
-### 5. KV/Secret Managed Authentication
+### 5. Authentication (HMAC or Container Secret)
 
-Secure authentication using Azure Key Vault:
+VibeSQL Server supports two authentication modes, controlled by `VibeSQL:AuthMode`:
 
-```csharp
-// Secrets loaded at startup
-services.AddVibeAuthentication(options =>
-{
-    options.UseKeyVault = true;
-    options.KeyVaultUrl = "https://your-vault.vault.azure.net/";
-    options.SecretName = "vibesql-auth-key";
-});
-```
-
-Or use environment variables for local development:
+**HMAC (default)** -- For edge/DMZ deployments where callers sign requests:
 
 ```bash
-VIBESQL_AUTH_SECRET="your-secret-key"
+# appsettings.json or environment
+VibeSQL__AuthMode=hmac
+VibeSQL__HmacSecret="base64-encoded-secret"
+# or env var: VIBESQL_HMAC_SECRET
 ```
+
+Callers must send three headers:
+- `X-Vibe-Timestamp` -- Unix epoch seconds
+- `X-Vibe-Signature` -- HMAC-SHA256 of `{timestamp}|{METHOD}|{path}`
+- `X-Vibe-Service` -- Calling service name
+
+**Container Secret** -- For internal/k8s deployments with a shared secret:
+
+```bash
+# appsettings.json or environment
+VibeSQL__AuthMode=secret
+VibeSQL__ContainerSecret="your-shared-secret"
+# or env var: VIBESQL_CONTAINER_SECRET
+```
+
+Callers send a single header:
+- `Authorization: Secret {your-shared-secret}`
+
+Both modes bypass auth for `/health` and `/swagger` paths. The optional `X-Vibe-Client-Tier` header is supported in both modes for tier-based timeout configuration.
 
 ---
 
@@ -414,7 +426,7 @@ dotnet test
 |---------|---------------|----------------|---------------|
 | **Use Case** | Local dev | Production self-hosted | Managed cloud |
 | **Multi-tenant** | ❌ | ✅ | ✅ |
-| **Auth** | ❌ | ✅ HMAC secret-based | ✅ Full OAuth |
+| **Auth** | None | HMAC + Container Secret | Full OAuth |
 | **Schema evolution** | ❌ | ✅ Lazy migration | ✅ Lazy migration |
 | **Rate limiting** | ❌ | ⚠️ Tier timeouts | ✅ Tier-based |
 | **Audit logs** | ❌ | ✅ Full trail | ✅ Full trail |
