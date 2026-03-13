@@ -6,7 +6,6 @@ using Serilog.Sinks.Graylog.Core.Transport;
 using VibeSQL.Core.Models;
 using VibeSQL.Core.Query;
 using VibeSQL.Server.Middleware;
-using VibeSQL.Server.Swagger;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -37,42 +36,20 @@ builder.Host.UseSerilog();
 builder.Services.AddHttpContextAccessor();
 
 // ========================================
-// Auth Mode Configuration
-// Supports two modes: "hmac" (default) and "secret" (container secret).
-// HMAC is for edge/DMZ deployments; container secret is for internal/k8s.
+// Container Secret Authentication
+// VibeSQL Server is an internal service. HMAC auth is handled
+// by Vibe.Edge at the DMZ layer. This server uses a simple
+// shared secret for service-to-service auth.
 // ========================================
-var authMode = builder.Configuration["VibeSQL:AuthMode"] ?? "hmac";
-Log.Information("VIBESQL_STARTUP: Auth mode = {AuthMode}", authMode);
+var containerSecret = builder.Configuration["VibeSQL:ContainerSecret"]
+    ?? Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET")
+    ?? throw new InvalidOperationException(
+        "Container secret not configured. Set VibeSQL:ContainerSecret in appsettings " +
+        "or VIBESQL_CONTAINER_SECRET environment variable.");
 
-if (string.Equals(authMode, "secret", StringComparison.OrdinalIgnoreCase))
-{
-    var containerSecret = builder.Configuration["VibeSQL:ContainerSecret"]
-        ?? Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET")
-        ?? throw new InvalidOperationException(
-            "Container secret not configured. Set VibeSQL:ContainerSecret in appsettings " +
-            "or VIBESQL_CONTAINER_SECRET environment variable.");
-
-    var secretConfig = new VibeContainerSecretConfig { Secret = containerSecret };
-    builder.Services.AddSingleton(secretConfig);
-    Log.Information("VIBESQL_STARTUP: Container secret auth configured");
-}
-else
-{
-    // Default: HMAC auth
-    // Key vault integration (CryptAply) will provide key governance
-    // and compliance - see IKeyVaultService for the integration point.
-    var secretConfiguration = new VibeSecretConfiguration
-    {
-        HmacSecretName = builder.Configuration["VibeSQL:HmacSecretName"] ?? "VibeHmacSecret",
-        HmacSecret = builder.Configuration["VibeSQL:HmacSecret"]
-            ?? Environment.GetEnvironmentVariable("VIBESQL_HMAC_SECRET")
-            ?? throw new InvalidOperationException(
-                "HMAC secret not configured. Set VibeSQL:HmacSecret in appsettings " +
-                "or VIBESQL_HMAC_SECRET environment variable.")
-    };
-    builder.Services.AddSingleton(secretConfiguration);
-    Log.Information("VIBESQL_STARTUP: HMAC auth configured");
-}
+var secretConfig = new VibeContainerSecretConfig { Secret = containerSecret };
+builder.Services.AddSingleton(secretConfig);
+Log.Information("VIBESQL_STARTUP: Container secret auth configured");
 
 // ========================================
 // VibeSQL Core Query Services
@@ -87,14 +64,15 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
-    var isSecretMode = string.Equals(authMode, "secret", StringComparison.OrdinalIgnoreCase);
-
-    var authDescription = isSecretMode
-        ? @"Production-ready PostgreSQL query server with HTTP API.
+    c.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "VibeSQL Server API",
+        Version = "v2.0.0",
+        Description = @"Production-ready PostgreSQL query server with HTTP API.
 
 Features:
 - Raw SQL execution with validation and safety checks
-- Container secret authentication for internal/k8s deployments
+- Container secret authentication for internal deployments
 - Tier-based rate limiting and timeouts
 - JSONB support for flexible schemas
 - Built-in query limits and security
@@ -105,33 +83,9 @@ All endpoints (except /health) require container secret authentication:
 
 - **Authorization**: `Secret {your-container-secret}`
 
-Optional: **X-Vibe-Client-Tier** sets the tier for timeout/rate limits (Free, Starter, Pro, Enterprise)."
-        : @"Production-ready PostgreSQL query server with HTTP API.
-
-Features:
-- Raw SQL execution with validation and safety checks
-- KV/secret managed HMAC authentication
-- Tier-based rate limiting and timeouts
-- JSONB support for flexible schemas
-- Built-in query limits and security
-
-## Authentication
-
-All endpoints (except /health) require HMAC authentication via three headers:
-
-- **X-Vibe-Timestamp**: Unix epoch seconds (must be within 5 minutes)
-- **X-Vibe-Signature**: HMAC-SHA256 of `{timestamp}|{METHOD}|{path}` using the shared secret
-- **X-Vibe-Service**: Identifier of the calling service (for logging)
-
 Optional: **X-Vibe-Client-Tier** sets the tier for timeout/rate limits (Free, Starter, Pro, Enterprise).
 
-In development, set `VibeSQL:DevBypassHmac=true` to skip HMAC validation for local testing.";
-
-    c.SwaggerDoc("v1", new OpenApiInfo
-    {
-        Title = "VibeSQL Server API",
-        Version = "v2.0.0",
-        Description = authDescription,
+HMAC authentication for external clients is handled by Vibe.Edge at the DMZ layer.",
         Contact = new OpenApiContact
         {
             Name = "VibeSQL",
@@ -144,61 +98,29 @@ In development, set `VibeSQL:DevBypassHmac=true` to skip HMAC validation for loc
         }
     });
 
-    if (isSecretMode)
+    // Container secret security scheme
+    c.AddSecurityDefinition("Authorization", new OpenApiSecurityScheme
     {
-        // Container secret security scheme
-        c.AddSecurityDefinition("Authorization", new OpenApiSecurityScheme
-        {
-            Type = SecuritySchemeType.ApiKey,
-            In = ParameterLocation.Header,
-            Name = "Authorization",
-            Description = "Container secret via `Secret {your-key}`"
-        });
+        Type = SecuritySchemeType.ApiKey,
+        In = ParameterLocation.Header,
+        Name = "Authorization",
+        Description = "Container secret via `Secret {your-key}`"
+    });
 
-        c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
         {
+            new OpenApiSecurityScheme
             {
-                new OpenApiSecurityScheme
+                Reference = new OpenApiReference
                 {
-                    Reference = new OpenApiReference
-                    {
-                        Type = ReferenceType.SecurityScheme,
-                        Id = "Authorization"
-                    }
-                },
-                Array.Empty<string>()
-            }
-        });
-    }
-    else
-    {
-        // HMAC security scheme definitions
-        c.AddSecurityDefinition("X-Vibe-Signature", new OpenApiSecurityScheme
-        {
-            Type = SecuritySchemeType.ApiKey,
-            In = ParameterLocation.Header,
-            Name = "X-Vibe-Signature",
-            Description = "HMAC-SHA256 signature of \"{timestamp}|{METHOD}|{path}\" using the shared secret (base64)"
-        });
-
-        c.AddSecurityDefinition("X-Vibe-Timestamp", new OpenApiSecurityScheme
-        {
-            Type = SecuritySchemeType.ApiKey,
-            In = ParameterLocation.Header,
-            Name = "X-Vibe-Timestamp",
-            Description = "Unix epoch timestamp (seconds). Must be within 5 minutes of server time."
-        });
-
-        c.AddSecurityDefinition("X-Vibe-Service", new OpenApiSecurityScheme
-        {
-            Type = SecuritySchemeType.ApiKey,
-            In = ParameterLocation.Header,
-            Name = "X-Vibe-Service",
-            Description = "Calling service identifier (e.g. 'vibe-app', 'admin-portal')"
-        });
-
-        c.OperationFilter<HmacAuthOperationFilter>();
-    }
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Authorization"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
 });
 
 // CORS
@@ -223,17 +145,9 @@ if (app.Environment.IsDevelopment())
 app.UseSerilogRequestLogging();
 app.UseCors();
 
-// Auth middleware — selected by VibeSQL:AuthMode config
-if (string.Equals(authMode, "secret", StringComparison.OrdinalIgnoreCase))
-{
-    app.UseMiddleware<ContainerSecretAuthMiddleware>();
-    Log.Information("VibeSQL Server using container secret authentication");
-}
-else
-{
-    app.UseMiddleware<HmacAuthMiddleware>();
-    Log.Information("VibeSQL Server using HMAC authentication");
-}
+// Container secret auth — internal service-to-service only
+app.UseMiddleware<ContainerSecretAuthMiddleware>();
+Log.Information("VibeSQL Server using container secret authentication");
 
 app.MapControllers();
 

@@ -1,6 +1,6 @@
 # VibeSQL Server
 
-**Production-ready PostgreSQL + JSONB server with multi-tenant architecture, schema evolution, and KV/secret managed authentication.**
+**Production-ready PostgreSQL + JSONB server with multi-tenant architecture, schema evolution, and container secret authentication.**
 
 ---
 
@@ -11,7 +11,7 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 **Key Features:**
 - **Multi-tenant architecture** — Isolated data per client with tier-based rate limiting
 - **Schema evolution** — Automatic lazy migration on read with transform support
-- **KV/secret managed auth** — Azure Key Vault integration for secure authentication
+- **Container secret auth** — Simple shared secret for internal service-to-service calls (vault integration planned)
 - **Virtual indexes** — JSONB query optimization without physical indexes
 - **Audit logging** — Complete audit trail for compliance
 - **Tier-based rate limiting** — Free, Starter, Pro, Enterprise tiers
@@ -30,7 +30,7 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 - **.NET 9.0** — Modern C# with ASP.NET Core
 - **PostgreSQL 16+** — Native JSONB support
 - **Entity Framework Core 9.0** — Code-first migrations
-- **Azure Key Vault** — Secret management (configurable)
+- **Azure Key Vault** — Secret management (planned)
 
 ---
 
@@ -40,7 +40,6 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 
 - .NET 9.0 SDK
 - PostgreSQL 16+ (local or remote)
-- Azure Key Vault (optional, for KV/secret auth)
 
 ### Build
 
@@ -160,29 +159,12 @@ Complete audit trail for compliance:
 }
 ```
 
-### 5. Authentication (HMAC or Container Secret)
+### 5. Authentication (Container Secret)
 
-VibeSQL Server supports two authentication modes, controlled by `VibeSQL:AuthMode`:
-
-**HMAC (default)** -- For edge/DMZ deployments where callers sign requests:
+VibeSQL Server is an **internal service** that uses container secret authentication for service-to-service calls. HMAC authentication for external clients is handled by **Vibe.Edge** at the DMZ layer.
 
 ```bash
 # appsettings.json or environment
-VibeSQL__AuthMode=hmac
-VibeSQL__HmacSecret="base64-encoded-secret"
-# or env var: VIBESQL_HMAC_SECRET
-```
-
-Callers must send three headers:
-- `X-Vibe-Timestamp` -- Unix epoch seconds
-- `X-Vibe-Signature` -- HMAC-SHA256 of `{timestamp}|{METHOD}|{path}`
-- `X-Vibe-Service` -- Calling service name
-
-**Container Secret** -- For internal/k8s deployments with a shared secret:
-
-```bash
-# appsettings.json or environment
-VibeSQL__AuthMode=secret
 VibeSQL__ContainerSecret="your-shared-secret"
 # or env var: VIBESQL_CONTAINER_SECRET
 ```
@@ -190,7 +172,7 @@ VibeSQL__ContainerSecret="your-shared-secret"
 Callers send a single header:
 - `Authorization: Secret {your-shared-secret}`
 
-Both modes bypass auth for `/health` and `/swagger` paths. The optional `X-Vibe-Client-Tier` header is supported in both modes for tier-based timeout configuration.
+Auth is bypassed for `/health` and `/swagger` paths. The optional `X-Vibe-Client-Tier` header is supported for tier-based timeout configuration.
 
 ---
 
@@ -277,13 +259,8 @@ PUT /api/v1/schemas/{schemaId}
 # Database
 DATABASE_CONNECTION="Host=localhost;Database=vibesql;Username=postgres;Password=..."
 
-# Authentication
-VIBESQL_AUTH_SECRET="your-secret-key"
-VIBESQL_USE_KEYVAULT=false
-
-# Azure Key Vault (optional)
-AZURE_KEYVAULT_URL="https://your-vault.vault.azure.net/"
-VIBESQL_SECRET_NAME="vibesql-auth-key"
+# Authentication (container secret)
+VIBESQL_CONTAINER_SECRET="your-shared-secret"
 
 # Rate Limiting
 VIBESQL_DEFAULT_TIER="Free"
@@ -426,7 +403,7 @@ dotnet test
 |---------|---------------|----------------|---------------|
 | **Use Case** | Local dev | Production self-hosted | Managed cloud |
 | **Multi-tenant** | ❌ | ✅ | ✅ |
-| **Auth** | None | HMAC + Container Secret | Full OAuth |
+| **Auth** | None | Container Secret (Edge handles HMAC) | Full OAuth |
 | **Schema evolution** | ❌ | ✅ Lazy migration | ✅ Lazy migration |
 | **Rate limiting** | ❌ | ⚠️ Tier timeouts | ✅ Tier-based |
 | **Audit logs** | ❌ | ✅ Full trail | ✅ Full trail |
