@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-03-14
+
+### Added
+- **Agent mail performance indexes** — Targeted partial indexes on `vibe.documents` for agent mail inbox and message lookups: inbox by agent (sorted), messages by ID, inbox by message_id (mark-as-read)
+
 ## 2026-03-13
 
 ### Changed
