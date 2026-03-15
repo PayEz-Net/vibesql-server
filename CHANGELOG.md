@@ -3,6 +3,7 @@
 ## 2026-03-14
 
 ### Added
+- **Agent mail relational schema** — Standalone agent mail tables (agents, teams, messages, inbox, kanban) for VibeSQL Server users who don't run vibesql-micro, with performance indexes baked in
 - **Agent mail performance indexes** — Targeted partial indexes on `vibe.documents` for agent mail inbox and message lookups: inbox by agent (sorted), messages by ID, inbox by message_id (mark-as-read)
 
 ## 2026-03-13
