@@ -10,7 +10,17 @@ public interface IQueryValidator
 
 public class QueryValidator : IQueryValidator
 {
+    /// <summary>
+    /// Maximum allowed SQL query length for data DML (10KB).
+    /// Schema DDL (INSERT/UPDATE on collection_schemas) uses SchemaMaxQuerySize.
+    /// </summary>
     public const int MaxQuerySize = 10 * 1024;
+
+    /// <summary>
+    /// Maximum allowed SQL query length for schema operations (512KB).
+    /// Schema definitions contain full JSON with table/column definitions.
+    /// </summary>
+    public const int SchemaMaxQuerySize = 512 * 1024;
 
     private static readonly string[] ValidKeywords =
     {
@@ -28,12 +38,17 @@ public class QueryValidator : IQueryValidator
                 "The 'sql' field is required and cannot be empty");
         }
 
-        if (sql!.Length > MaxQuerySize)
+        // Schema operations get a higher size limit
+        var isSchemaOperation = sql!.Contains("collection_schemas", StringComparison.OrdinalIgnoreCase);
+        var limit = isSchemaOperation ? SchemaMaxQuerySize : MaxQuerySize;
+
+        if (sql.Length > limit)
         {
+            var limitKb = limit / 1024;
             throw new VibeQueryError(
                 VibeErrorCodes.QueryTooLarge,
                 "Query too large",
-                "SQL query exceeds the maximum allowed size of 10KB");
+                $"SQL query exceeds the maximum allowed size of {limitKb}KB");
         }
 
         var upperSql = trimmed.ToUpperInvariant();
