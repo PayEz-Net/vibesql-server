@@ -166,6 +166,15 @@ public class ChangeClassifier : IChangeClassifier
                     $"Column '{mod.ColumnName}' on '{table}': upcast {mod.OldDef.Type} → {mod.NewDef.Type}",
                     TableName: table, ColumnName: mod.ColumnName));
             }
+            else if (IsNarrowing(mod.OldDef.Type, mod.NewDef.Type))
+            {
+                items.Add(new SentinelItem(
+                    SentinelTaxonomy.D302_NarrowColumnType,
+                    SentinelVerdict.Destructive,
+                    $"Column '{mod.ColumnName}' on '{table}': narrow type {mod.OldDef.Type} → {mod.NewDef.Type}",
+                    TableName: table, ColumnName: mod.ColumnName,
+                    RequiresDataCheck: true));
+            }
             else
             {
                 items.Add(new SentinelItem(
@@ -181,11 +190,39 @@ public class ChangeClassifier : IChangeClassifier
     /// <summary>Text/varchar widening — always safe.</summary>
     private static bool IsWidening(string oldType, string newType)
     {
-        // text is the widest string type
+        // text is the widest string type — any varchar → text is widening
         if (newType.Equals("text", StringComparison.OrdinalIgnoreCase) &&
             oldType.StartsWith("varchar", StringComparison.OrdinalIgnoreCase))
             return true;
+
+        // varchar(n) → varchar(m) where m > n is widening
+        var oldLen = ParseVarcharLength(oldType);
+        var newLen = ParseVarcharLength(newType);
+        if (oldLen.HasValue && newLen.HasValue && newLen.Value > oldLen.Value)
+            return true;
+
         return false;
+    }
+
+    /// <summary>Check if type change is a narrowing (D-302).</summary>
+    internal static bool IsNarrowing(string oldType, string newType)
+    {
+        var oldLen = ParseVarcharLength(oldType);
+        var newLen = ParseVarcharLength(newType);
+        if (oldLen.HasValue && newLen.HasValue && newLen.Value < oldLen.Value)
+            return true;
+        // text → varchar(n) is narrowing
+        if (oldType.Equals("text", StringComparison.OrdinalIgnoreCase) &&
+            newType.StartsWith("varchar", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
+    private static int? ParseVarcharLength(string type)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            type, @"varchar\((\d+)\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success ? int.Parse(match.Groups[1].Value) : null;
     }
 
     /// <summary>Safe numeric upcasts — int→bigint, real→double, etc.</summary>
