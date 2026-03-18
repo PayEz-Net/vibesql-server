@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using VibeSQL.Sentinel;
 
 namespace VibeSQL.Core.Sentinel;
 

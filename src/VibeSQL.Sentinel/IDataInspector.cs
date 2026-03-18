@@ -1,4 +1,4 @@
-namespace VibeSQL.Core.Sentinel;
+namespace VibeSQL.Sentinel;
 
 /// <summary>
 /// Inspects live database to determine data-at-risk for schema changes.

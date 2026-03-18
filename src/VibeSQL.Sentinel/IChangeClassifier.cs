@@ -1,4 +1,4 @@
-namespace VibeSQL.Core.Sentinel;
+namespace VibeSQL.Sentinel;
 
 /// <summary>
 /// Classifies a SchemaDiff using the Sentinel Taxonomy.

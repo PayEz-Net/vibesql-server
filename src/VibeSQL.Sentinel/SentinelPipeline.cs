@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
-namespace VibeSQL.Core.Sentinel;
+namespace VibeSQL.Sentinel;
 
 /// <summary>
 /// Orchestrates the Sentinel pipeline: Validate → Diff → Classify → Inspect → Verdict.

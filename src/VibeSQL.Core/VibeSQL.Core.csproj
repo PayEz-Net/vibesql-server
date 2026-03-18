@@ -37,6 +37,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\VibeSQL.Sentinel\VibeSQL.Sentinel.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- SQL migrations as embedded resources -->
     <EmbeddedResource Include="Data\Migrations\**\*.sql" />
   </ItemGroup>

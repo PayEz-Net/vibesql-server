@@ -1,4 +1,4 @@
-namespace VibeSQL.Core.Sentinel;
+namespace VibeSQL.Sentinel;
 
 /// <summary>
 /// Schema Sentinel classification codes.

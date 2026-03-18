@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace VibeSQL.Core.Sentinel;
+namespace VibeSQL.Sentinel;
 
 /// <summary>
 /// Computes structural diff between old and new JSON schemas.

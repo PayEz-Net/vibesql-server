@@ -1,4 +1,4 @@
-namespace VibeSQL.Core.Sentinel;
+namespace VibeSQL.Sentinel;
 
 /// <summary>
 /// Rules engine that classifies each item in a SchemaDiff using the Sentinel Taxonomy.
