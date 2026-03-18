@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using Devart.Data.PostgreSql;
+using Npgsql;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -61,7 +61,7 @@ public class QueryExecutor : IQueryExecutor
 
         try
         {
-            await using var connection = new PgSqlConnection(_connectionString);
+            await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(timeoutCts.Token);
 
             var rows = await ExecuteQueryAsync(connection, sql, timeoutCts.Token);
@@ -85,10 +85,10 @@ public class QueryExecutor : IQueryExecutor
                 "Query execution timeout",
                 $"Query exceeded the maximum execution time of {timeout.TotalSeconds} seconds");
         }
-        catch (PgSqlException pgEx)
+        catch (PostgresException pgEx)
         {
-            _logger.LogError(pgEx, "VIBESQL_QUERY: PostgreSQL error - {Code}: {Message}", pgEx.ErrorCode, pgEx.Message);
-            throw SqlStateMapper.TranslateDevartError(pgEx);
+            _logger.LogError(pgEx, "VIBESQL_QUERY: PostgreSQL error - {SqlState}: {Message}", pgEx.SqlState, pgEx.MessageText);
+            throw SqlStateMapper.TranslatePostgresError(pgEx);
         }
         catch (VibeQueryError)
         {
@@ -105,13 +105,13 @@ public class QueryExecutor : IQueryExecutor
     }
 
     private async Task<List<Dictionary<string, object?>>> ExecuteQueryAsync(
-        PgSqlConnection connection,
+        NpgsqlConnection connection,
         string sql,
         CancellationToken cancellationToken)
     {
         var results = new List<Dictionary<string, object?>>();
 
-        await using var command = new PgSqlCommand(sql, connection);
+        await using var command = new NpgsqlCommand(sql, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         var columnCount = reader.FieldCount;

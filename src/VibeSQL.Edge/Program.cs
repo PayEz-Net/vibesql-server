@@ -43,9 +43,9 @@ builder.Host.UseSerilog();
 builder.Services.Configure<VibeEdgeOptions>(
     builder.Configuration.GetSection(VibeEdgeOptions.SectionName));
 
-// EF Core - Edge's own tables in vibe_system schema (Devart dotConnect for PostgreSQL)
+// EF Core - Edge's own tables in vibe_system schema (Npgsql for PostgreSQL)
 builder.Services.AddDbContext<EdgeDbContext>(options =>
-    options.UsePostgreSql(builder.Configuration.GetConnectionString("EdgeDb")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("EdgeDb")));
 
 // HttpClient for proxying to VibeSQL.Server
 builder.Services.AddHttpClient("VibeServer", client =>
@@ -64,7 +64,7 @@ builder.Services.AddSingleton<IDynamicSchemeRegistrar, DynamicSchemeRegistrar>()
 builder.Services.AddHostedService<EdgeAuthBackgroundService>();
 builder.Services.AddSingleton<IProviderRefreshTrigger>(sp => (EdgeAuthBackgroundService)sp.GetServices<IHostedService>().First(s => s is EdgeAuthBackgroundService));
 
-// Authentication — multi-provider OIDC via PolicyScheme
+// Authentication ï¿½ multi-provider OIDC via PolicyScheme
 const string rejectScheme = "EdgeReject";
 builder.Services.AddAuthentication(options =>
 {
@@ -196,10 +196,10 @@ app.UseSerilogRequestLogging();
 app.UseCors();
 
 // Middleware pipeline order:
-// 1. Authentication — JWT validation via multi-provider PolicyScheme
-// 2. IdentityResolution — maps JWT claims ? federated identity ? vibe_user_id
-// 3. PermissionEnforcement — resolves role ? permission level, classifies SQL, gates access
-// 4. Routing + Authorization — ASP.NET Core endpoint routing and [Authorize] enforcement
+// 1. Authentication ï¿½ JWT validation via multi-provider PolicyScheme
+// 2. IdentityResolution ï¿½ maps JWT claims ? federated identity ? vibe_user_id
+// 3. PermissionEnforcement ï¿½ resolves role ? permission level, classifies SQL, gates access
+// 4. Routing + Authorization ï¿½ ASP.NET Core endpoint routing and [Authorize] enforcement
 app.UseAuthentication();
 app.UseMiddleware<IdentityResolutionMiddleware>();
 app.UseMiddleware<PermissionEnforcementMiddleware>();

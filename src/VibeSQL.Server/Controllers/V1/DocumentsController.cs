@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
-using Devart.Data.PostgreSql;
+using Npgsql;
 using VibeSQL.Core.Query;
 
 namespace VibeSQL.Server.Controllers.V1;
@@ -44,7 +44,7 @@ public class DocumentsController : ControllerBase
 
         try
         {
-            await using var connection = new PgSqlConnection(_connectionString);
+            await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
             var sql = @"INSERT INTO vibe.documents
@@ -54,16 +54,16 @@ public class DocumentsController : ControllerBase
                         RETURNING document_id, client_id, user_id, collection, table_name, data,
                                   collection_schema_id, created_at, created_by";
 
-            await using var cmd = new PgSqlCommand(sql, connection);
-            cmd.Parameters.Add(new PgSqlParameter("@client_id", request.ClientId));
-            cmd.Parameters.Add(new PgSqlParameter("@user_id",
+            await using var cmd = new NpgsqlCommand(sql, connection);
+            cmd.Parameters.Add(new NpgsqlParameter("@client_id", request.ClientId));
+            cmd.Parameters.Add(new NpgsqlParameter("@user_id",
                 request.UserId.HasValue ? (object)request.UserId.Value : DBNull.Value));
-            cmd.Parameters.Add(new PgSqlParameter("@collection", collection));
-            cmd.Parameters.Add(new PgSqlParameter("@table_name", table));
-            cmd.Parameters.Add(new PgSqlParameter("@data", request.Data));
-            cmd.Parameters.Add(new PgSqlParameter("@collection_schema_id",
+            cmd.Parameters.Add(new NpgsqlParameter("@collection", collection));
+            cmd.Parameters.Add(new NpgsqlParameter("@table_name", table));
+            cmd.Parameters.Add(new NpgsqlParameter("@data", request.Data));
+            cmd.Parameters.Add(new NpgsqlParameter("@collection_schema_id",
                 request.CollectionSchemaId.HasValue ? (object)request.CollectionSchemaId.Value : DBNull.Value));
-            cmd.Parameters.Add(new PgSqlParameter("@created_by",
+            cmd.Parameters.Add(new NpgsqlParameter("@created_by",
                 request.CreatedBy.HasValue ? (object)request.CreatedBy.Value : DBNull.Value));
 
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -91,10 +91,10 @@ public class DocumentsController : ControllerBase
                 meta = new { collection, table }
             });
         }
-        catch (PgSqlException pgEx)
+        catch (PostgresException pgEx)
         {
             _logger.LogError(pgEx, "VIBESQL_DOCUMENTS: PostgreSQL error inserting document");
-            var error = SqlStateMapper.TranslateDevartError(pgEx);
+            var error = SqlStateMapper.TranslatePostgresError(pgEx);
             return StatusCode(error.HttpStatusCode, error.ToResponse());
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

@@ -101,47 +101,16 @@ public static class SqlStateMapper
     };
 
     /// <summary>
-    /// Translate Devart PgSqlException to VibeQueryError
+    /// Translate Npgsql PostgresException to VibeQueryError
     /// </summary>
-    public static VibeQueryError TranslateDevartError(Devart.Data.PostgreSql.PgSqlException pgEx)
+    public static VibeQueryError TranslatePostgresError(Npgsql.PostgresException pgEx)
     {
-        var sqlState = ExtractSqlStateFromMessage(pgEx.Message);
+        var sqlState = pgEx.SqlState ?? string.Empty;
         var vibeCode = SqlStateToVibeCode.GetValueOrDefault(sqlState, VibeErrorCodes.InternalError);
-        var message = GetMessageForCode(vibeCode, pgEx.Message);
-        var detail = $"PostgreSQL error: {pgEx.Message}";
+        var message = GetMessageForCode(vibeCode, pgEx.MessageText);
+        var detail = $"PostgreSQL error: {pgEx.MessageText}";
 
         return new VibeQueryError(vibeCode, message, detail);
-    }
-
-    private static string ExtractSqlStateFromMessage(string message)
-    {
-        if (string.IsNullOrEmpty(message))
-            return string.Empty;
-
-        var lowerMessage = message.ToLowerInvariant();
-
-        if (lowerMessage.Contains("syntax error"))
-            return "42601";
-        if (lowerMessage.Contains("column") && lowerMessage.Contains("does not exist"))
-            return "42703";
-        if (lowerMessage.Contains("relation") && lowerMessage.Contains("does not exist"))
-            return "42P01";
-        if (lowerMessage.Contains("function") && lowerMessage.Contains("does not exist"))
-            return "42883";
-        if (lowerMessage.Contains("type mismatch") || lowerMessage.Contains("cannot be cast"))
-            return "42804";
-        if (lowerMessage.Contains("canceling statement due to"))
-            return "57014";
-        if (lowerMessage.Contains("connection") && (lowerMessage.Contains("refused") || lowerMessage.Contains("failed")))
-            return "08006";
-        if (lowerMessage.Contains("too many connections"))
-            return "53300";
-
-        var sqlStatePattern = System.Text.RegularExpressions.Regex.Match(message, @"\b([0-9]{2}[0-9A-Z]{3})\b");
-        if (sqlStatePattern.Success)
-            return sqlStatePattern.Groups[1].Value;
-
-        return string.Empty;
     }
 
     /// <summary>
@@ -149,8 +118,8 @@ public static class SqlStateMapper
     /// </summary>
     public static VibeQueryError TranslateError(Exception ex)
     {
-        if (ex is Devart.Data.PostgreSql.PgSqlException pgEx)
-            return TranslateDevartError(pgEx);
+        if (ex is Npgsql.PostgresException pgEx)
+            return TranslatePostgresError(pgEx);
 
         if (ex is OperationCanceledException or TaskCanceledException)
         {

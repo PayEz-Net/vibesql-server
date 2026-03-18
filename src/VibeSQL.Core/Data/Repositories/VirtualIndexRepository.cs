@@ -94,7 +94,7 @@ public class VirtualIndexRepository : IVirtualIndexRepository
     public async Task ExecuteDDLAsync(string ddl, int timeoutSeconds = 300)
     {
         // Must use separate connection - CREATE INDEX CONCURRENTLY can't run in transaction
-        // Use DbConnection abstraction which works with Devart PostgreSQL provider
+        // Use DbConnection abstraction which works with Npgsql PostgreSQL provider
         var connection = _context.Database.GetDbConnection();
         var shouldClose = connection.State != System.Data.ConnectionState.Open;
         

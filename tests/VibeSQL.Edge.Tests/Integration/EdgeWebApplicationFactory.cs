@@ -44,8 +44,8 @@ public class EdgeWebApplicationFactory : WebApplicationFactory<Program>
                         || st == typeof(DbContextOptions)
                         || st == typeof(EdgeDbContext)
                         || (st.IsGenericType && st.GetGenericTypeDefinition().Name.Contains("IDbContextOptionsConfiguration"))
-                        || st.FullName?.Contains("Devart") == true
-                        || it?.FullName?.Contains("Devart") == true;
+                        || st.FullName?.Contains("Npgsql") == true
+                        || it?.FullName?.Contains("Npgsql") == true;
                 })
                 .ToList();
             foreach (var d in toRemove)
