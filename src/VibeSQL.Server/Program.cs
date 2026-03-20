@@ -10,22 +10,6 @@ using VibeSQL.Server.Middleware;
 var builder = WebApplication.CreateBuilder(args);
 
 // ========================================
-// Kestrel HTTPS — use PFX cert if mounted by AKS
-// ========================================
-var pfxPath = "/app/certs/up-wc.pfx";
-if (File.Exists(pfxPath))
-{
-    var pfxPassword = builder.Configuration["Kestrel:CertificatePassword"] ?? "";
-    builder.WebHost.ConfigureKestrel(options =>
-    {
-        options.ListenAnyIP(443, listenOptions =>
-        {
-            listenOptions.UseHttps(pfxPath, pfxPassword);
-        });
-    });
-}
-
-// ========================================
 // Serilog Logging
 // ========================================
 var graylogHost = builder.Configuration["Logging:Graylog:HostnameOrAddress"];
