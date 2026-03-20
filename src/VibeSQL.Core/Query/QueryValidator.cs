@@ -11,10 +11,11 @@ public interface IQueryValidator
 public class QueryValidator : IQueryValidator
 {
     /// <summary>
-    /// Maximum allowed SQL query length for data DML (10KB).
-    /// Schema DDL (INSERT/UPDATE on collection_schemas) uses SchemaMaxQuerySize.
+    /// Maximum allowed SQL query length for data DML (256KB).
+    /// Document INSERTs carry user content (resumes, profiles) that can be 50-100KB+.
+    /// Previous 10KB limit blocked real payloads.
     /// </summary>
-    public const int MaxQuerySize = 10 * 1024;
+    public const int MaxQuerySize = 256 * 1024;
 
     /// <summary>
     /// Maximum allowed SQL query length for schema operations (512KB).
