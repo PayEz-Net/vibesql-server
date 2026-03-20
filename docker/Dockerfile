@@ -6,6 +6,7 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 COPY ["src/VibeSQL.Server/VibeSQL.Server.csproj", "src/VibeSQL.Server/"]
 COPY ["src/VibeSQL.Core/VibeSQL.Core.csproj", "src/VibeSQL.Core/"]
+COPY ["src/VibeSQL.Sentinel/VibeSQL.Sentinel.csproj", "src/VibeSQL.Sentinel/"]
 RUN dotnet restore "src/VibeSQL.Server/VibeSQL.Server.csproj"
 COPY . .
 WORKDIR "/src/src/VibeSQL.Server"
