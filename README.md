@@ -22,14 +22,17 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 
 ### Projects
 
-- **VibeSQL.Core** — Core library with repositories, services, and data access
-- **VibeSQL.Server** — ASP.NET Core REST API server
+| Project | Description |
+|---------|-------------|
+| **VibeSQL.Server** | ASP.NET Core REST API — query execution, schema CRUD, document storage |
+| **VibeSQL.Core** | Core library — repositories, query engine, validators, data access |
+| **VibeSQL.Sentinel** | Schema change classifier — 4-tier risk taxonomy (Safe/Migration/Destructive/Prohibited), data-aware verdict downgrading. Zero EF Core dependency. |
+| **VibeSQL.Edge** | External-facing OIDC gateway — multi-provider JWT auth, federated identity, SQL permission enforcement, HMAC-signed proxy to Server |
 
 ### Tech Stack
 
 - **.NET 9.0** — Modern C# with ASP.NET Core
-- **PostgreSQL 16+** — Native JSONB support
-- **Entity Framework Core 9.0** — Code-first migrations
+- **PostgreSQL 16+** — Native JSONB support, Npgsql driver
 - **Azure Key Vault** — Secret management (planned)
 
 ---
@@ -328,11 +331,12 @@ dotnet ef database update --startup-project ../VibeSQL.Server
 
 ### Docker
 
-```dockerfile
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
-WORKDIR /app
-COPY publish/ .
-ENTRYPOINT ["dotnet", "VibeSQL.Server.dll"]
+```bash
+docker build -t vibesql-server -f docker/Dockerfile .
+docker run -p 52411:8080 \
+  -e DATABASE_CONNECTION="Host=db;Database=vibesql;..." \
+  -e VIBESQL_CONTAINER_SECRET="your-secret" \
+  vibesql-server
 ```
 
 ### Azure App Service
@@ -360,16 +364,30 @@ See `docker/k8s/` for Kubernetes manifests.
 ```
 src/
 ├── VibeSQL.Core/               # Core library
-│   ├── Data/                   # DbContext, repositories
-│   ├── Entities/               # Domain models
-│   ├── Services/               # Business logic
-│   ├── Interfaces/             # Abstractions
-│   └── DTOs/                   # Data transfer objects
+│   ├── Data/                   # Repositories, migrations
+│   ├── Query/                  # QueryExecutor, QueryValidator, safety checks
+│   └── Sentinel/               # PostgresTableInspector (data inspection)
 │
-└── VibeSQL.Server/             # ASP.NET Core API
-    ├── Controllers/            # REST endpoints
-    ├── Middleware/             # Auth, rate limiting
-    └── Program.cs              # Startup
+├── VibeSQL.Server/             # ASP.NET Core API
+│   ├── Controllers/V1/         # Query, Schemas, Documents controllers
+│   ├── Middleware/             # Auth, rate limiting
+│   └── Program.cs              # Startup
+│
+├── VibeSQL.Sentinel/           # Schema change classification (standalone)
+│   ├── SchemaDiffEngine.cs     # Structural diff between JSON schemas
+│   ├── ChangeClassifier.cs     # Deterministic rules engine
+│   ├── SentinelTaxonomy.cs     # S/M/D/P code definitions
+│   └── SentinelPipeline.cs     # Orchestrator: diff → classify → inspect → verdict
+│
+└── VibeSQL.Edge/               # OIDC gateway (external-facing)
+    ├── Authentication/         # Multi-provider JWT, dynamic scheme registration
+    ├── Authorization/          # Permission resolver, SQL statement classifier
+    ├── Identity/               # Federated identity, auto-provisioning
+    ├── Admin/                  # Provider, role, client management APIs
+    └── Proxy/                  # HMAC-signed reverse proxy to Server
+
+tests/
+└── VibeSQL.Edge.Tests/         # Unit + integration tests for Edge
 ```
 
 ### Testing
@@ -397,18 +415,30 @@ dotnet test
 
 ---
 
+## Ecosystem
+
+| Component | Description | Repo |
+|-----------|-------------|------|
+| **VibeSQL Micro** | Embedded Go binary with PostgreSQL 16.1 for local dev | [vibesql-micro](https://github.com/PayEz-Net/vibesql-micro) |
+| **VibeSQL Server** | Production .NET 9 server with multi-tenant architecture | This repo |
+| **VibeSQL Edge** | OIDC gateway with federated auth and SQL permission enforcement | This repo (`src/VibeSQL.Edge`) |
+| **VibeSQL Sentinel** | Schema change classification and safety analysis | This repo (`src/VibeSQL.Sentinel`) |
+| **vsql CLI** | Zero-dep TypeScript CLI for query, schema management, rollback | [vsql](https://github.com/PayEz-Net/vsql) |
+| **vibesql-mail** | Agent-to-agent messaging MCP server | [vibesql-mail-mcp](https://github.com/PayEz-Net/vibesql-mail-mcp) |
+
 ## Comparison
 
-| Feature | VibeSQL Micro | VibeSQL Server | VibeSQL Cloud (Planned) |
-|---------|---------------|----------------|---------------|
-| **Use Case** | Local dev | Production self-hosted | Managed cloud |
-| **Multi-tenant** | ❌ | ✅ | ✅ |
-| **Auth** | None | Container Secret (Edge handles HMAC) | Full OAuth |
-| **Schema evolution** | ❌ | ✅ Lazy migration | ✅ Lazy migration |
-| **Rate limiting** | ❌ | ⚠️ Tier timeouts | ✅ Tier-based |
-| **Audit logs** | ❌ | ✅ Full trail | ✅ Full trail |
-| **Managed hosting** | ❌ | ❌ | ✅ |
-| **Cost** | Free | Free (self-host) | Paid plans |
+| Feature | VibeSQL Micro | VibeSQL Server | VibeSQL Server + Edge |
+|---------|---------------|----------------|----------------------|
+| **Use Case** | Local dev | Internal services | External / multi-provider |
+| **Multi-tenant** | - | ✅ | ✅ |
+| **Auth** | None | Container Secret | OIDC JWT (multi-provider) |
+| **Schema evolution** | - | ✅ Lazy migration | ✅ Lazy migration |
+| **Schema safety** | - | ✅ Sentinel | ✅ Sentinel |
+| **Permission enforcement** | - | - | ✅ SQL classification |
+| **Rate limiting** | - | ⚠️ Tier timeouts | ✅ Tier-based |
+| **Audit logs** | - | ✅ Full trail | ✅ Full trail |
+| **Cost** | Free | Free (self-host) | Free (self-host) |
 
 ---
 
@@ -427,6 +457,8 @@ Apache 2.0 License. See [LICENSE](LICENSE).
 ## Links
 
 - **VibeSQL Micro** (local dev): [github.com/PayEz-Net/vibesql-micro](https://github.com/PayEz-Net/vibesql-micro)
+- **vsql CLI**: [github.com/PayEz-Net/vsql](https://github.com/PayEz-Net/vsql)
+- **Agent Mail MCP**: [github.com/PayEz-Net/vibesql-mail-mcp](https://github.com/PayEz-Net/vibesql-mail-mcp)
 - **Website**: [vibesql.online](https://vibesql.online)
 - **Documentation**: [vibesql.online/docs](https://vibesql.online/docs)
 
