@@ -3,7 +3,9 @@ using Serilog;
 using Serilog.Events;
 using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
+using VibeSQL.Core;
 using VibeSQL.Core.Models;
+using VibeSQL.Core.Options;
 using VibeSQL.Core.Query;
 using VibeSQL.Server.Middleware;
 
@@ -42,10 +44,14 @@ builder.Services.AddHttpContextAccessor();
 // shared secret for service-to-service auth.
 // ========================================
 var containerSecret = builder.Configuration["VibeSQL:ContainerSecret"]
-    ?? Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET")
-    ?? throw new InvalidOperationException(
+    ?? Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET");
+
+if (string.IsNullOrWhiteSpace(containerSecret))
+{
+    throw new InvalidOperationException(
         "Container secret not configured. Set VibeSQL:ContainerSecret in appsettings " +
         "or VIBESQL_CONTAINER_SECRET environment variable.");
+}
 
 var secretConfig = new VibeContainerSecretConfig { Secret = containerSecret };
 builder.Services.AddSingleton(secretConfig);
@@ -58,6 +64,12 @@ builder.Services.AddSingleton<IQueryValidator, QueryValidator>();
 builder.Services.AddSingleton<IQuerySafetyChecker, QuerySafetyChecker>();
 builder.Services.AddSingleton<IQueryLimiter, QueryLimiter>();
 builder.Services.AddScoped<IQueryExecutor, QueryExecutor>();
+
+// ========================================
+// VibeSQL Schema Sentinel (VS-SS)
+// ========================================
+builder.Services.AddVibeSentinelServices(builder.Configuration);
+Log.Information("VIBESQL_STARTUP: Schema Sentinel enabled");
 
 // Controllers + Swagger
 builder.Services.AddControllers();
@@ -76,6 +88,7 @@ Features:
 - Tier-based rate limiting and timeouts
 - JSONB support for flexible schemas
 - Built-in query limits and security
+- **Schema Sentinel (VS-SS)**: Automatic protection against destructive schema changes
 
 ## Authentication
 
@@ -85,7 +98,20 @@ All endpoints (except /health) require container secret authentication:
 
 Optional: **X-Vibe-Client-Tier** sets the tier for timeout/rate limits (Free, Starter, Pro, Enterprise).
 
-HMAC authentication for external clients is handled by Vibe.Edge at the DMZ layer.",
+HMAC authentication for external clients is handled by Vibe.Edge at the DMZ layer.
+
+## Schema Sentinel (VS-SS)
+
+Schema changes are automatically classified using the Sentinel Taxonomy:
+- **S-100** (Safe): Add tables, nullable columns, indexes — auto-applied
+- **M-200** (Migration): Add non-null columns with defaults — auto-applied with DDL
+- **D-300** (Destructive): Drop tables/columns, narrow types — blocked, can override
+- **P-400** (Prohibited): Drop entire schema, major regressions — blocked, never allowed
+
+To override a Destructive (409) change, include header:
+- **X-Vibe-Force-Schema-Update**: `true`
+
+Prohibited (422) changes cannot be overridden.",
         Contact = new OpenApiContact
         {
             Name = "VibeSQL",
