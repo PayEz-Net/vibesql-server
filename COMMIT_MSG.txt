@@ -1,0 +1,27 @@
+feat: Add VibeSQL Schema Sentinel (VS-SS) v0.3.1 - Production-ready schema protection! 🛡️
+
+This release brings comprehensive schema change protection to VibeSQL Server:
+
+New Features:
+- Schema Sentinel Pipeline: Diff → Classify → Inspect → Verdict
+- Sentinel Taxonomy: S-100 (Safe), M-200 (Migration), D-300 (Destructive), P-400 (Prohibited)
+- Automatic blocking of destructive changes (drop tables/columns, type narrowing)
+- Header-based override for Destructive changes: X-Vibe-Force-Schema-Update: true
+- Configurable via VibeSQL:Sentinel settings in appsettings.json
+
+Architecture:
+- ISchemaDiffEngine: Pure in-memory JSON schema comparison
+- IChangeClassifier: Deterministic rules engine (no surprises!)
+- IDataInspector: Pluggable data-at-risk detection (PostgresTableInspector included)
+- Fail-closed design: Errors and missing inspectors default to blocking
+
+API Changes:
+- PUT /v1/schemas/{collection} now returns 409 (Destructive) or 422 (Prohibited) when blocked
+- Response includes detailed sentinel.verdict and riskItems for transparency
+
+Security:
+- Empty container secret validation (no bypass with "")
+- Prohibited changes (P-400) can never be overridden
+- Budget-limited data inspection (500ms total, 5s per query)
+
+Deployed and tested on 10.0.0.93 with vsql-cli - VS-SS is actively protecting your data!

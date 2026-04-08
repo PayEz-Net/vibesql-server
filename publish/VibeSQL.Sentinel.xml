@@ -1,0 +1,123 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>VibeSQL.Sentinel</name>
+    </assembly>
+    <members>
+        <member name="T:VibeSQL.Sentinel.ChangeClassifier">
+            <summary>
+            Rules engine that classifies each item in a SchemaDiff using the Sentinel Taxonomy.
+            Deterministic — same diff always produces same classification.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.ChangeClassifier.IsWidening(System.String,System.String)">
+            <summary>Text/varchar widening — always safe.</summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.ChangeClassifier.IsNarrowing(System.String,System.String)">
+            <summary>Check if type change is a narrowing (D-302).</summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.ChangeClassifier.IsSafeUpcast(System.String,System.String)">
+            <summary>Safe numeric upcasts — int→bigint, real→double, etc.</summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.IChangeClassifier">
+            <summary>
+            Classifies a SchemaDiff using the Sentinel Taxonomy.
+            Pure rules engine — deterministic, no DB access.
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.ClassifierContext">
+            <summary>
+            Optional context for classification decisions (e.g., total table count for P-401).
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.ClassifierContext.#ctor(System.Int32,System.Boolean)">
+            <summary>
+            Optional context for classification decisions (e.g., total table count for P-401).
+            </summary>
+        </member>
+        <member name="P:VibeSQL.Sentinel.ClassificationResult.DataCheckItems">
+            <summary>Items that need a DataInspector query before final verdict.</summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.IDataInspector">
+            <summary>
+            Inspects live database to determine data-at-risk for schema changes.
+            Called only for items with RequiresDataCheck = true.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.IDataInspector.InspectAsync(System.Collections.Generic.List{VibeSQL.Sentinel.SentinelItem},System.Threading.CancellationToken)">
+            <summary>
+            Inspect data for items that need a data check before final verdict.
+            Returns updated items with data-aware severity (e.g., empty table drop → Migration, not Destructive).
+            </summary>
+        </member>
+        <member name="P:VibeSQL.Sentinel.DataInspectionResult.Items">
+            <summary>Items with updated severity based on data inspection.</summary>
+        </member>
+        <member name="P:VibeSQL.Sentinel.DataInspectionResult.HasDataAtRisk">
+            <summary>True if any inspected item has data at risk.</summary>
+        </member>
+        <member name="P:VibeSQL.Sentinel.DataInspectionResult.TotalRowsAtRisk">
+            <summary>Total rows across all at-risk tables/columns.</summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.ISchemaDiffEngine">
+            <summary>
+            Computes the structural diff between two JSON schemas.
+            Pure in-memory comparison — no database access.
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.SchemaDiffEngine">
+            <summary>
+            Computes structural diff between old and new JSON schemas.
+            Handles VibeSQL multi-table format: { "tables": { "tableName": { "properties": { ... } } } }
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.SchemaDiffEngine.ExtractTables(System.Text.Json.JsonDocument)">
+            <summary>
+            Extract table definitions from a JSON schema document.
+            Returns: { tableName: { columnName: ColumnDef } }
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.SentinelPipeline">
+            <summary>
+            Orchestrates the Sentinel pipeline: Validate → Diff → Classify → Inspect → Verdict.
+            Called by schema change endpoints before applying a schema update.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.SentinelPipeline.AnalyzeAsync(System.Text.Json.JsonDocument,System.Text.Json.JsonDocument,VibeSQL.Sentinel.ClassifierContext,System.Threading.CancellationToken)">
+            <summary>
+            Analyze a proposed schema change. Returns the full verdict without applying.
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.SentinelVerdictResult">
+            <summary>
+            Complete verdict from the Sentinel pipeline.
+            </summary>
+        </member>
+        <member name="P:VibeSQL.Sentinel.SentinelVerdictResult.RiskReport">
+            <summary>Human-readable risk items for the 409 response body.</summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.SentinelTaxonomy">
+            <summary>
+            Schema Sentinel classification codes.
+            Every atomic schema change is classified into exactly one code.
+            The overall verdict is the highest-risk code present.
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.SentinelVerdict">
+            <summary>
+            Verdict levels, ordered by severity.
+            Overall verdict = highest level present in the change set.
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Sentinel.SentinelItem">
+            <summary>
+            A single classified schema change item.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Sentinel.SentinelItem.#ctor(System.String,VibeSQL.Sentinel.SentinelVerdict,System.String,System.String,System.String,System.Boolean)">
+            <summary>
+            A single classified schema change item.
+            </summary>
+        </member>
+    </members>
+</doc>

@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>VibeSQL.Server</name>
+    </assembly>
+    <members>
+        <member name="M:VibeSQL.Server.Controllers.V1.DocumentsController.InsertDocument(System.String,System.String,VibeSQL.Server.Controllers.V1.DocumentInsertRequest,System.Threading.CancellationToken)">
+            <summary>
+            Insert a document into a collection table
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Server.Controllers.V1.QueryController">
+            <summary>
+            Raw SQL query execution endpoint - core VibeSQL functionality
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.QueryController.ExecuteQuery(VibeSQL.Core.Models.QueryRequest)">
+            <summary>
+            Execute a SQL query
+            </summary>
+            <remarks>
+            Executes a raw SQL query against the configured PostgreSQL database with:
+            - Query validation (size limits, valid SQL keywords)
+            - Safety checks (UPDATE/DELETE require WHERE clause)
+            - Result limits (configurable, default 1000 rows)
+            - Query timeout (tier-based)
+            </remarks>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.QueryController.Health">
+            <summary>
+            Health check endpoint
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.SchemasController.GetVersions(System.String,System.Nullable{System.Int32},System.Threading.CancellationToken)">
+            <summary>
+            List all schema versions for a collection
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.SchemasController.CreateOrUpdateSchema(System.String,VibeSQL.Server.Controllers.V1.SchemaUpdateRequest,System.Threading.CancellationToken)">
+            <summary>
+            Create or update a schema for a collection.
+            Creates a new version and deactivates previous versions.
+            
+            Schema Sentinel (VS-SS) will block destructive changes unless overridden.
+            Use X-Vibe-Force-Schema-Update: true header to override Destructive (409) changes.
+            Prohibited (422) changes cannot be overridden.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.SchemasController.RunSentinelPipeline(System.Text.Json.JsonDocument,System.Text.Json.JsonDocument,System.String,System.Int32,Npgsql.NpgsqlConnection,System.Threading.CancellationToken)">
+            <summary>
+            Run the Schema Sentinel pipeline: Diff → Classify → Inspect → Verdict.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.SchemasController.GetTableCountAsync(Npgsql.NpgsqlConnection,System.Int32,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Get the number of tables in the current schema for P-401 detection.
+            </summary>
+        </member>
+        <member name="M:VibeSQL.Server.Controllers.V1.SchemasController.ValidateStructuralConstraints(System.Text.Json.JsonDocument,System.String)">
+            <summary>
+            Q1: Structural validation on CREATE (no current schema to diff against).
+            Checks for P-403 and other structural issues.
+            </summary>
+        </member>
+        <member name="T:VibeSQL.Server.Middleware.ContainerSecretAuthMiddleware">
+             <summary>
+             Shared-secret authentication middleware for internal service-to-service calls.
+             Validates Authorization: Secret {key} header.
+            
+             This is the standard internal auth pattern for k8s/container deployments.
+             HMAC is reserved for edge/DMZ services — internal services behind the firewall
+             use simple shared-secret validation.
+             </summary>
+        </member>
+    </members>
+</doc>
