@@ -42,3 +42,7 @@ Thumbs.db
 .env
 *.env.local
 appsettings.*.local.json
+
+## Build artifacts (do not commit)
+*.tar
+publish/
