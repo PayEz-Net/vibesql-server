@@ -87,7 +87,43 @@ public class QueryExecutor : IQueryExecutor
         }
         catch (PostgresException pgEx)
         {
-            _logger.LogError(pgEx, "VIBESQL_QUERY: PostgreSQL error - {SqlState}: {Message}", pgEx.SqlState, pgEx.MessageText);
+            stopwatch.Stop();
+
+            if (SqlStateMapper.IsConstraintViolation(pgEx.SqlState))
+            {
+                // Structured constraint-enforcement event. The VibeEventType
+                // scope property is what the dedicated file/syslog/graylog
+                // sub-logger filters on (see Program.cs constraint sink).
+                // Keep the message Postgres-like so flatfile readers feel native.
+                using (_logger.BeginScope(new Dictionary<string, object?>
+                {
+                    ["VibeEventType"] = "CONSTRAINT_VIOLATION",
+                    ["SqlState"] = pgEx.SqlState,
+                    ["ConstraintName"] = pgEx.ConstraintName ?? string.Empty,
+                    ["SchemaName"] = pgEx.SchemaName ?? string.Empty,
+                    ["TableName"] = pgEx.TableName ?? string.Empty,
+                    ["ColumnName"] = pgEx.ColumnName ?? string.Empty,
+                    ["Detail"] = pgEx.Detail ?? string.Empty,
+                    ["Hint"] = pgEx.Hint ?? string.Empty,
+                    ["Statement"] = TruncateForLog(sql, 500),
+                    ["DurationMs"] = stopwatch.Elapsed.TotalMilliseconds,
+                }))
+                {
+                    _logger.LogWarning(
+                        "CONSTRAINT_VIOLATION [{SqlState}]: {PgMessage} (constraint={Constraint}, table={Schema}.{Table}, column={Column})",
+                        pgEx.SqlState,
+                        pgEx.MessageText,
+                        string.IsNullOrEmpty(pgEx.ConstraintName) ? "-" : pgEx.ConstraintName,
+                        string.IsNullOrEmpty(pgEx.SchemaName) ? "-" : pgEx.SchemaName,
+                        string.IsNullOrEmpty(pgEx.TableName) ? "-" : pgEx.TableName,
+                        string.IsNullOrEmpty(pgEx.ColumnName) ? "-" : pgEx.ColumnName);
+                }
+            }
+            else
+            {
+                _logger.LogError(pgEx, "VIBESQL_QUERY: PostgreSQL error - {SqlState}: {Message}", pgEx.SqlState, pgEx.MessageText);
+            }
+
             throw SqlStateMapper.TranslatePostgresError(pgEx);
         }
         catch (VibeQueryError)

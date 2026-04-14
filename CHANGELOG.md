@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-14
+
+### Added
+- **Constraint violation observability** — PostgreSQL integrity constraint violations (SQLSTATE class 23) now emit structured `CONSTRAINT_VIOLATION` events with constraint name, schema, table, column, `DETAIL`, `HINT`, truncated statement, and duration. A dedicated Serilog sub-logger filters these to a Postgres-style rolling flatfile (`logs/vibesql-constraints.log` by default), leaving the main Console/Graylog pipeline untouched. Toggle via `Logging:VibeSQL:ConstraintLog:Enabled` in appsettings.
+- **`VibeErrorCodes` for class 23** — `UNIQUE_VIOLATION` (23505), `FOREIGN_KEY_VIOLATION` (23503), `NOT_NULL_VIOLATION` (23502), `CHECK_VIOLATION` (23514), `EXCLUSION_VIOLATION` (23P01), `CONSTRAINT_VIOLATION` (23000/23001). Each maps to an appropriate HTTP status (409 for conflicts, 400 for not-null/check) so API clients can branch on the error code instead of parsing messages.
+- **`SqlStateMapper.IsConstraintViolation(sqlState)`** — helper that returns true for any SQLSTATE in class 23, used by `QueryExecutor` to route structured events.
+
 ## 2026-03-19
 
 ### Added

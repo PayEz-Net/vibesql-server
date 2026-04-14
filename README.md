@@ -177,6 +177,35 @@ Callers send a single header:
 
 Auth is bypassed for `/health` and `/swagger` paths. The optional `X-Vibe-Client-Tier` header is supported for tier-based timeout configuration.
 
+### 6. Constraint Violation Observability
+
+PostgreSQL integrity constraint violations (SQLSTATE class 23 — unique, foreign key, not-null, check, exclusion) are surfaced as structured `CONSTRAINT_VIOLATION` events with constraint name, schema, table, column, `DETAIL`, `HINT`, truncated statement, and duration. A dedicated Serilog sub-logger filters these to a Postgres-style rolling flatfile, leaving your main Console/Graylog pipeline untouched:
+
+```
+2026-04-14 22:47:01.234 +00:00 [42] WARN :  CONSTRAINT_VIOLATION [23505]: duplicate key value violates unique constraint "idx_users_email_unique" (constraint=idx_users_email_unique, table=vibe.documents, column=-)
+	DETAIL:  Key (email)=(foo@example.com) already exists.
+	STATEMENT:  INSERT INTO vibe.documents (...) VALUES (...)
+```
+
+Configure in `appsettings.json`:
+
+```json
+{
+  "Logging": {
+    "VibeSQL": {
+      "ConstraintLog": {
+        "Enabled": true,
+        "FilePath": "logs/vibesql-constraints.log",
+        "RollingInterval": "Day",
+        "RetainedFileCountLimit": 14
+      }
+    }
+  }
+}
+```
+
+API clients can branch on the error code (`UNIQUE_VIOLATION`, `FOREIGN_KEY_VIOLATION`, `NOT_NULL_VIOLATION`, `CHECK_VIOLATION`, `EXCLUSION_VIOLATION`, `CONSTRAINT_VIOLATION`) instead of parsing PostgreSQL messages. HTTP status follows the semantics: 409 for conflicts, 400 for not-null and check violations.
+
 ---
 
 ## API Examples

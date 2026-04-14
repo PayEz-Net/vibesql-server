@@ -16,6 +16,16 @@ public static class VibeErrorCodes
     public const string ServiceUnavailable = "SERVICE_UNAVAILABLE";
     public const string DatabaseUnavailable = "DATABASE_UNAVAILABLE";
     public const string Unauthorized = "UNAUTHORIZED";
+
+    // Integrity constraint violations (PostgreSQL SQLSTATE class 23).
+    // Distinct codes for each so clients can branch; all emit structured
+    // CONSTRAINT_VIOLATION observability events.
+    public const string ConstraintViolation = "CONSTRAINT_VIOLATION";
+    public const string UniqueViolation = "UNIQUE_VIOLATION";
+    public const string ForeignKeyViolation = "FOREIGN_KEY_VIOLATION";
+    public const string NotNullViolation = "NOT_NULL_VIOLATION";
+    public const string CheckViolation = "CHECK_VIOLATION";
+    public const string ExclusionViolation = "EXCLUSION_VIOLATION";
 }
 
 /// <summary>
@@ -40,11 +50,17 @@ public class VibeQueryError : Exception
         VibeErrorCodes.InvalidSQL => 400,
         VibeErrorCodes.MissingRequiredField => 400,
         VibeErrorCodes.UnsafeQuery => 400,
+        VibeErrorCodes.NotNullViolation => 400,
+        VibeErrorCodes.CheckViolation => 400,
+        VibeErrorCodes.Unauthorized => 401,
         VibeErrorCodes.QueryTimeout => 408,
+        VibeErrorCodes.UniqueViolation => 409,
+        VibeErrorCodes.ForeignKeyViolation => 409,
+        VibeErrorCodes.ExclusionViolation => 409,
+        VibeErrorCodes.ConstraintViolation => 409,
         VibeErrorCodes.QueryTooLarge => 413,
         VibeErrorCodes.ResultTooLarge => 413,
         VibeErrorCodes.DocumentTooLarge => 413,
-        VibeErrorCodes.Unauthorized => 401,
         VibeErrorCodes.InternalError => 500,
         VibeErrorCodes.ServiceUnavailable => 503,
         VibeErrorCodes.DatabaseUnavailable => 503,
@@ -98,7 +114,25 @@ public static class SqlStateMapper
         // Document size errors
         ["54000"] = VibeErrorCodes.DocumentTooLarge,
         ["54001"] = VibeErrorCodes.DocumentTooLarge,
+
+        // Integrity constraint violations (PostgreSQL SQLSTATE class 23).
+        // These surface as structured CONSTRAINT_VIOLATION events in the
+        // observability pipeline (QueryExecutor emits ForContext scope on 23*).
+        ["23000"] = VibeErrorCodes.ConstraintViolation,       // integrity_constraint_violation (generic)
+        ["23001"] = VibeErrorCodes.ConstraintViolation,       // restrict_violation
+        ["23502"] = VibeErrorCodes.NotNullViolation,          // not_null_violation
+        ["23503"] = VibeErrorCodes.ForeignKeyViolation,       // foreign_key_violation
+        ["23505"] = VibeErrorCodes.UniqueViolation,           // unique_violation
+        ["23514"] = VibeErrorCodes.CheckViolation,            // check_violation
+        ["23P01"] = VibeErrorCodes.ExclusionViolation,        // exclusion_violation
     };
+
+    /// <summary>
+    /// True if the SQLSTATE is in class 23 (integrity constraint violation).
+    /// Used by the query executor to emit structured observability events.
+    /// </summary>
+    public static bool IsConstraintViolation(string? sqlState) =>
+        !string.IsNullOrEmpty(sqlState) && sqlState.StartsWith("23", StringComparison.Ordinal);
 
     /// <summary>
     /// Translate Npgsql PostgresException to VibeQueryError
@@ -141,6 +175,14 @@ public static class SqlStateMapper
         VibeErrorCodes.QueryTimeout => "Query execution timeout",
         VibeErrorCodes.DatabaseUnavailable => "Database is unavailable",
         VibeErrorCodes.DocumentTooLarge => "Document too large",
+        // Constraint messages: prefer PostgreSQL's own text — it's already
+        // human-readable and names the constraint/table/column.
+        VibeErrorCodes.UniqueViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Unique constraint violated",
+        VibeErrorCodes.ForeignKeyViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Foreign key constraint violated",
+        VibeErrorCodes.NotNullViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Not-null constraint violated",
+        VibeErrorCodes.CheckViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Check constraint violated",
+        VibeErrorCodes.ExclusionViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Exclusion constraint violated",
+        VibeErrorCodes.ConstraintViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Integrity constraint violated",
         _ => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "An error occurred"
     };
 }

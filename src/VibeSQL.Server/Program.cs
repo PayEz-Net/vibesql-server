@@ -1,6 +1,7 @@
 using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Events;
+using Serilog.Filters;
 using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
 using VibeSQL.Core;
@@ -17,7 +18,32 @@ var builder = WebApplication.CreateBuilder(args);
 var graylogHost = builder.Configuration["Logging:Graylog:HostnameOrAddress"];
 var graylogPort = builder.Configuration["Logging:Graylog:Port"];
 
-Log.Logger = new LoggerConfiguration()
+// Dedicated constraint-violation log (Postgres-style flatfile by default).
+// Toggled by Logging:VibeSQL:ConstraintLog:Enabled in appsettings.
+// The executor emits events with scope property VibeEventType=CONSTRAINT_VIOLATION;
+// this sub-logger filter routes only those events to the file, leaving the main
+// Console/Graylog pipeline untouched. Adding syslog/ES/etc. later = one more
+// WriteTo.* line inside the same sub-logger block.
+var constraintLogEnabled = builder.Configuration.GetValue<bool>("Logging:VibeSQL:ConstraintLog:Enabled", true);
+var constraintLogPath = builder.Configuration["Logging:VibeSQL:ConstraintLog:FilePath"]
+    ?? "logs/vibesql-constraints.log";
+var constraintLogRetention = builder.Configuration.GetValue<int>("Logging:VibeSQL:ConstraintLog:RetainedFileCountLimit", 14);
+var constraintRollingIntervalStr = builder.Configuration["Logging:VibeSQL:ConstraintLog:RollingInterval"] ?? "Day";
+var constraintRollingInterval = Enum.TryParse<Serilog.RollingInterval>(constraintRollingIntervalStr, ignoreCase: true, out var parsedInterval)
+    ? parsedInterval
+    : Serilog.RollingInterval.Day;
+
+// Postgres-style multi-line output template. One event renders as:
+//   2026-04-13 22:47:01.234 UTC [tid] ERROR:  duplicate key value violates unique constraint "idx_users_email_unique"
+//           DETAIL:  Key (email)=(foo@example.com) already exists.
+//           STATEMENT:  INSERT INTO vibe.documents (...) VALUES (...);
+// The tab-indented continuation matches PostgreSQL's own log_line_prefix feel.
+const string constraintOutputTemplate =
+    "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{ThreadId}] {Level:u5}:  {Message:lj}{NewLine}" +
+    "\tDETAIL:  {Detail}{NewLine}" +
+    "\tSTATEMENT:  {Statement}{NewLine}";
+
+var loggerConfig = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
     .Enrich.FromLogContext()
@@ -30,8 +56,23 @@ Log.Logger = new LoggerConfiguration()
         Port = int.TryParse(graylogPort, out var port) ? port : 12201,
         TransportType = TransportType.Udp,
         Facility = "VibeSQL.Server"
-    })
-    .CreateLogger();
+    });
+
+if (constraintLogEnabled)
+{
+    loggerConfig = loggerConfig.WriteTo.Logger(lc => lc
+        .Filter.ByIncludingOnly(Matching.WithProperty<string>(
+            "VibeEventType",
+            v => string.Equals(v, "CONSTRAINT_VIOLATION", StringComparison.Ordinal)))
+        .WriteTo.File(
+            path: constraintLogPath,
+            outputTemplate: constraintOutputTemplate,
+            rollingInterval: constraintRollingInterval,
+            retainedFileCountLimit: constraintLogRetention,
+            shared: true));
+}
+
+Log.Logger = loggerConfig.CreateLogger();
 
 builder.Host.UseSerilog();
 
