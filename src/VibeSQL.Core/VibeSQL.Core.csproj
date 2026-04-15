@@ -41,6 +41,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="VibeSQL.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- SQL migrations as embedded resources -->
     <EmbeddedResource Include="Data\Migrations\**\*.sql" />
   </ItemGroup>
