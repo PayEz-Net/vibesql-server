@@ -206,6 +206,42 @@ Configure in `appsettings.json`:
 
 API clients can branch on the error code (`UNIQUE_VIOLATION`, `FOREIGN_KEY_VIOLATION`, `NOT_NULL_VIOLATION`, `CHECK_VIOLATION`, `EXCLUSION_VIOLATION`, `CONSTRAINT_VIOLATION`) instead of parsing PostgreSQL messages. HTTP status follows the semantics: 409 for conflicts, 400 for not-null and check violations.
 
+### 7. Query Validation
+
+`QueryValidator` runs lightweight checks on every SQL query before it reaches PostgreSQL:
+
+- **Non-empty** — missing or whitespace-only queries return `MISSING_REQUIRED_FIELD`.
+- **Size limit** — standard DML is capped at 256KB. Schema writes against the `collection_schemas` table — queries whose normalized prefix is `INSERT INTO COLLECTION_SCHEMAS` or `UPDATE COLLECTION_SCHEMAS` — get a higher 512KB allowance because schema rows carry full JSON definitions. `SELECT`, `DELETE`, and DDL statements targeting that table fall through to the 256KB default: `DELETE` is not a schema write, and DDL payloads are small enough for the default budget.
+- **Keyword prefix** — queries must start with a recognized keyword (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `TRUNCATE`).
+
+#### Error previews
+
+Validation errors include the first 80 characters of the offending SQL in the error detail so clients can identify which query was rejected without cross-referencing server logs:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "QUERY_TOO_LARGE",
+    "message": "Query too large",
+    "detail": "SQL query exceeds the maximum allowed size of 256KB. Starts with: INSERT INTO users (name, email, bio, avatar_url, created_at) VALUES..."
+  }
+}
+```
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "INVALID_SQL",
+    "message": "Invalid SQL syntax",
+    "detail": "Query must start with a valid SQL keyword (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP). Received: EXEC sp_who..."
+  }
+}
+```
+
+Preview slicing uses UTF-16 code units with a high-surrogate guard: if truncation would split a surrogate pair at the boundary (e.g. an emoji whose high surrogate lands at code unit 79), the preview shortens to 79 characters so the JSON error body contains no replacement characters or half-surrogates.
+
 ---
 
 ## API Examples
