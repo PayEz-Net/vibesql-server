@@ -28,6 +28,9 @@ public static class ServiceCollectionExtensions
         // Schema migration service for lazy document migration
         services.AddScoped<IVibeSchemaMigrationService, VibeSchemaMigrationService>();
 
+        // Schema Sentinel service for health monitoring, validation, and cleanup
+        services.AddScoped<IVibeSchemaSentinelService, VibeSchemaSentinelService>();
+
         return services;
     }
 

@@ -11,6 +11,7 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 **Key Features:**
 - **Multi-tenant architecture** — Isolated data per client with tier-based rate limiting
 - **Schema evolution** — Automatic lazy migration on read with transform support
+- **Schema Sentinel** — Health monitoring, corruption detection, and automated rollback
 - **Container secret auth** — Simple shared secret for internal service-to-service calls (vault integration planned)
 - **Virtual indexes** — JSONB query optimization without physical indexes
 - **Audit logging** — Complete audit trail for compliance
@@ -27,6 +28,7 @@ VibeSQL Server is the production version of VibeSQL - a multi-tenant PostgreSQL 
 | **VibeSQL.Server** | ASP.NET Core REST API — query execution, schema CRUD, document storage |
 | **VibeSQL.Core** | Core library — repositories, query engine, validators, data access |
 | **VibeSQL.Sentinel** | Schema change classifier — 4-tier risk taxonomy (Safe/Migration/Destructive/Prohibited), data-aware verdict downgrading. Zero EF Core dependency. |
+| **VibeSchemaSentinelService** | Schema health monitoring, corruption detection, validation, and rollback. Uses PostgreSQL functions `validate_schema_json` and `cleanup_corrupted_schemas`. |
 | **VibeSQL.Edge** | External-facing OIDC gateway — multi-provider JWT auth, federated identity, SQL permission enforcement, HMAC-signed proxy to Server |
 
 ### Tech Stack
@@ -431,7 +433,8 @@ src/
 ├── VibeSQL.Core/               # Core library
 │   ├── Data/                   # Repositories, migrations
 │   ├── Query/                  # QueryExecutor, QueryValidator, safety checks
-│   └── Sentinel/               # PostgresTableInspector (data inspection)
+│   ├── Sentinel/               # PostgresTableInspector (data inspection)
+│   └── Services/               # VibeSchemaSentinelService (health + rollback)
 │
 ├── VibeSQL.Server/             # ASP.NET Core API
 │   ├── Controllers/V1/         # Query, Schemas, Documents controllers
