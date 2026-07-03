@@ -9,8 +9,9 @@ services:
       - "52411:8080"
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
-      - VIBESQL__HmacSecret=${VIBESQL_HMAC_SECRET}
+      - VIBESQL_CONTAINER_SECRET=${VIBESQL_CONTAINER_SECRET:-CHANGE_ME}
       - ConnectionStrings__VibeDb=Server=postgres;Port=5432;Database=vibesql;User Id=vibesql;Password=${POSTGRES_PASSWORD:-vibesql123};
+      - ConnectionStrings__VibeDbRls=Server=postgres;Port=5432;Database=vibesql;User Id=vibe_rls_user;Password=${POSTGRES_PASSWORD:-vibesql123};
     depends_on:
       - postgres
     networks:

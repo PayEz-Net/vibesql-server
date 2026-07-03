@@ -5,7 +5,8 @@ using VibeSQL.Core.Query;
 namespace VibeSQL.Server.Controllers.V1;
 
 /// <summary>
-/// Raw SQL query execution endpoint - core VibeSQL functionality
+/// Raw SQL query execution endpoint - core VibeSQL functionality.
+/// Ported from the hardened PayEz.VibeSql.Server.Api binary.
 /// </summary>
 [ApiController]
 [Route("v1")]
@@ -24,12 +25,13 @@ public class QueryController : ControllerBase
     }
 
     /// <summary>
-    /// Execute a SQL query
+    /// Execute a SQL query.
     /// </summary>
     /// <remarks>
     /// Executes a raw SQL query against the configured PostgreSQL database with:
     /// - Query validation (size limits, valid SQL keywords)
     /// - Safety checks (UPDATE/DELETE require WHERE clause)
+    /// - Tenant isolation (RLS via SET LOCAL app.client_id)
     /// - Result limits (configurable, default 1000 rows)
     /// - Query timeout (tier-based)
     /// </remarks>
@@ -42,12 +44,13 @@ public class QueryController : ControllerBase
     public async Task<IActionResult> ExecuteQuery([FromBody] QueryRequest request)
     {
         var tier = HttpContext.Items["ClientTier"] as string;
+        var clientId = HttpContext.Items["ClientId"] as int?;
 
         try
         {
-            _logger.LogDebug("VIBESQL_QUERY: Received query request");
+            _logger.LogDebug("VIBE_QUERY_ENDPOINT: Received query request");
 
-            var result = await _executor.ExecuteAsync(request.Sql, tier, HttpContext.RequestAborted);
+            var result = await _executor.ExecuteAsync(request.Sql, tier, clientId, HttpContext.RequestAborted);
 
             return Ok(new QueryResponse
             {
@@ -62,18 +65,18 @@ public class QueryController : ControllerBase
         }
         catch (VibeQueryError ex)
         {
-            _logger.LogWarning("VIBESQL_QUERY: Query error - {Code}: {Message}", ex.Code, ex.Message);
+            _logger.LogWarning("VIBE_QUERY_ENDPOINT: Query error - {Code}: {Message}", ex.Code, ex.Message);
             return StatusCode(ex.HttpStatusCode, ex.ToResponse());
         }
     }
 
     /// <summary>
-    /// Health check endpoint
+    /// Health check endpoint.
     /// </summary>
     [HttpGet("health")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public IActionResult Health()
     {
-        return Ok(new { status = "healthy", service = "vibesql-server", version = "2.0.0" });
+        return Ok(new { status = "healthy", service = "vibe-server-api", version = "2.0.0" });
     }
 }

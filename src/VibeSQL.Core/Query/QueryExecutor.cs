@@ -1,31 +1,18 @@
 using System.Diagnostics;
-using Devart.Data.PostgreSql;
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace VibeSQL.Core.Query;
 
 /// <summary>
-/// Query execution result
+/// Executes SQL queries with validation, safety checks, tenant isolation, and limits.
+/// Ported from the hardened PayEz.VibeSql.Server.Api binary.
 /// </summary>
-public class QueryExecutionResult
-{
-    public List<Dictionary<string, object?>> Rows { get; set; } = new();
-    public int RowCount { get; set; }
-    public double ExecutionTimeMs { get; set; }
-}
-
-/// <summary>
-/// Executes SQL queries with validation, safety checks, and limits
-/// </summary>
-public interface IQueryExecutor
-{
-    Task<QueryExecutionResult> ExecuteAsync(string sql, string? tier = null, CancellationToken cancellationToken = default);
-}
-
 public class QueryExecutor : IQueryExecutor
 {
-    private readonly string _connectionString;
+    private readonly string? _rlsConnectionString;
     private readonly IQueryValidator _validator;
     private readonly IQuerySafetyChecker _safetyChecker;
     private readonly IQueryLimiter _limiter;
@@ -38,22 +25,25 @@ public class QueryExecutor : IQueryExecutor
         IQueryLimiter limiter,
         ILogger<QueryExecutor> logger)
     {
-        _connectionString = configuration.GetConnectionString("VibeDb")
-            ?? throw new InvalidOperationException("VibeDb connection string not configured");
+        _rlsConnectionString = configuration.GetConnectionString("VibeDbRls");
         _validator = validator;
         _safetyChecker = safetyChecker;
         _limiter = limiter;
         _logger = logger;
     }
 
-    public async Task<QueryExecutionResult> ExecuteAsync(string sql, string? tier = null, CancellationToken cancellationToken = default)
+    public async Task<QueryExecutionResult> ExecuteAsync(
+        string sql,
+        string? tier = null,
+        int? clientId = null,
+        CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
 
         _validator.Validate(sql);
         _safetyChecker.CheckSafety(sql);
 
-        _logger.LogInformation("VIBESQL_QUERY: Executing query: {Query}", TruncateForLog(sql, 100));
+        _logger.LogInformation("VIBE_QUERY: Executing query: {Query}", TruncateForLog(sql, 100));
 
         var timeout = _limiter.GetTimeout(tier);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -61,22 +51,78 @@ public class QueryExecutor : IQueryExecutor
 
         try
         {
-            await using var connection = new PgSqlConnection(_connectionString);
+            if (!clientId.HasValue)
+            {
+                throw new VibeQueryError(
+                    VibeErrorCodes.TenantContextRequired,
+                    "Tenant context required",
+                    "A query was issued with no resolved client_id. Refusing to run on the privileged owner connection (would bypass row-level security). The trusted proxy must forward the resolved tenant id.");
+            }
+
+            if (string.IsNullOrWhiteSpace(_rlsConnectionString))
+            {
+                throw new VibeQueryError(
+                    VibeErrorCodes.InternalError,
+                    "Tenant isolation not configured",
+                    "A client-scoped query was issued but the RLS connection (VibeDbRls / vibe_rls_user) is not configured on this server. Refusing to run tenant data on the privileged connection.");
+            }
+
+            await using var connection = new NpgsqlConnection(_rlsConnectionString);
             await connection.OpenAsync(timeoutCts.Token);
 
-            var rows = await ExecuteQueryAsync(connection, sql, timeoutCts.Token);
+            await using var tx = await connection.BeginTransactionAsync(timeoutCts.Token);
 
-            stopwatch.Stop();
-
-            _logger.LogInformation("VIBESQL_QUERY: Query succeeded - {RowCount} rows in {ElapsedMs:F2}ms",
-                rows.Count, stopwatch.Elapsed.TotalMilliseconds);
-
-            return new QueryExecutionResult
+            await using (var setCmd = new NpgsqlCommand(
+                "SET LOCAL app.client_id = " + clientId.Value.ToString(CultureInfo.InvariantCulture),
+                connection,
+                tx))
             {
-                Rows = rows,
-                RowCount = rows.Count,
-                ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds
-            };
+                await setCmd.ExecuteNonQueryAsync(timeoutCts.Token);
+            }
+
+            var upperSql = sql.TrimStart().ToUpperInvariant();
+            var isNonReturningDml = (upperSql.StartsWith("UPDATE") ||
+                                     upperSql.StartsWith("DELETE") ||
+                                     upperSql.StartsWith("INSERT")) &&
+                                    !upperSql.Contains("RETURNING");
+
+            if (isNonReturningDml)
+            {
+                await using var cmd = new NpgsqlCommand(sql, connection, tx);
+                var affectedRows = await cmd.ExecuteNonQueryAsync(timeoutCts.Token);
+                await tx.CommitAsync(timeoutCts.Token);
+
+                stopwatch.Stop();
+                _logger.LogInformation(
+                    "VIBE_QUERY: Non-query succeeded - {AffectedRows} rows affected in {ElapsedMs:F2}ms",
+                    affectedRows,
+                    stopwatch.Elapsed.TotalMilliseconds);
+
+                return new QueryExecutionResult
+                {
+                    Rows = new List<Dictionary<string, object?>>(),
+                    RowCount = affectedRows,
+                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds
+                };
+            }
+            else
+            {
+                var rows = await ExecuteQueryAsync(connection, tx, sql, timeoutCts.Token);
+                await tx.CommitAsync(timeoutCts.Token);
+
+                stopwatch.Stop();
+                _logger.LogInformation(
+                    "VIBE_QUERY: Query succeeded - {RowCount} rows in {ElapsedMs:F2}ms",
+                    rows.Count,
+                    stopwatch.Elapsed.TotalMilliseconds);
+
+                return new QueryExecutionResult
+                {
+                    Rows = rows,
+                    RowCount = rows.Count,
+                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds
+                };
+            }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -85,10 +131,10 @@ public class QueryExecutor : IQueryExecutor
                 "Query execution timeout",
                 $"Query exceeded the maximum execution time of {timeout.TotalSeconds} seconds");
         }
-        catch (PgSqlException pgEx)
+        catch (PostgresException pgEx)
         {
-            _logger.LogError(pgEx, "VIBESQL_QUERY: PostgreSQL error - {Code}: {Message}", pgEx.ErrorCode, pgEx.Message);
-            throw SqlStateMapper.TranslateDevartError(pgEx);
+            _logger.LogError(pgEx, "VIBE_QUERY: PostgreSQL error - {Code}: {Message}", pgEx.SqlState, pgEx.MessageText);
+            throw SqlStateMapper.TranslatePostgresError(pgEx);
         }
         catch (VibeQueryError)
         {
@@ -96,7 +142,7 @@ public class QueryExecutor : IQueryExecutor
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "VIBESQL_QUERY: Unexpected error executing query");
+            _logger.LogError(ex, "VIBE_QUERY: Unexpected error executing query");
             throw new VibeQueryError(
                 VibeErrorCodes.InternalError,
                 "An internal error occurred",
@@ -105,13 +151,14 @@ public class QueryExecutor : IQueryExecutor
     }
 
     private async Task<List<Dictionary<string, object?>>> ExecuteQueryAsync(
-        PgSqlConnection connection,
+        NpgsqlConnection connection,
+        NpgsqlTransaction? transaction,
         string sql,
         CancellationToken cancellationToken)
     {
         var results = new List<Dictionary<string, object?>>();
 
-        await using var command = new PgSqlCommand(sql, connection);
+        await using var command = new NpgsqlCommand(sql, connection, transaction);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
         var columnCount = reader.FieldCount;

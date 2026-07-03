@@ -1,16 +1,21 @@
 namespace VibeSQL.Core.Models;
 
 /// <summary>
-/// Configuration model for query limits
+/// Configuration model for query limits.
 /// </summary>
 public class VibeQueryLimitsConfig
 {
     public int MaxResultRows { get; set; } = 1000;
-    public int MaxQuerySizeBytes { get; set; } = 10 * 1024;
+
+    /// <summary>
+    /// Maximum allowed SQL query size in bytes (default: 256KB).
+    /// Schema DDL uses <see cref="VibeSQL.Core.Query.QueryValidator.SchemaMaxQuerySize"/>.
+    /// </summary>
+    public int MaxQuerySizeBytes { get; set; } = 262144;
 }
 
 /// <summary>
-/// Configuration model for query timeouts by tier
+/// Configuration model for query timeouts by tier.
 /// </summary>
 public class VibeQueryTimeoutsConfig
 {

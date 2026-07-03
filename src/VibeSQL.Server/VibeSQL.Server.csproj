@@ -18,6 +18,13 @@
     <!-- Azure App Configuration (optional - for cloud deployments) -->
     <PackageReference Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.0.0" />
 
+    <!-- PostgreSQL driver -->
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+
+    <!-- JWT validation -->
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.3.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.3.0" />
+
     <!-- Logging -->
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />

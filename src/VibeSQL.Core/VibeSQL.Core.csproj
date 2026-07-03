@@ -14,7 +14,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- PostgreSQL driver (Devart dotConnect) -->
+    <!-- PostgreSQL drivers -->
+    <!-- Npgsql: raw SQL query engine (VibeSQL Server API) -->
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+    <!-- Devart dotConnect: EF Core repositories and migrations -->
     <PackageReference Include="Devart.Data.PostgreSql" Version="8.4.193" />
 
     <!-- Entity Framework Core -->

@@ -1,5 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
-using Devart.Data.PostgreSql;
+using Npgsql;
 using VibeSQL.Core.Query;
 
 namespace VibeSQL.Server.Controllers.V1;
@@ -22,7 +22,7 @@ public class SchemasController : ControllerBase
     }
 
     /// <summary>
-    /// List all schema versions for a collection
+    /// List all schema versions for a collection.
     /// </summary>
     [HttpGet("schemas/{collection}/versions")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -37,7 +37,7 @@ public class SchemasController : ControllerBase
 
         try
         {
-            await using var connection = new PgSqlConnection(_connectionString);
+            await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
             var sql = clientId.HasValue
@@ -54,10 +54,10 @@ public class SchemasController : ControllerBase
                     WHERE collection = @collection
                     ORDER BY version DESC";
 
-            await using var cmd = new PgSqlCommand(sql, connection);
-            cmd.Parameters.Add(new PgSqlParameter("@collection", collection));
+            await using var cmd = new NpgsqlCommand(sql, connection);
+            cmd.Parameters.Add(new NpgsqlParameter("collection", collection));
             if (clientId.HasValue)
-                cmd.Parameters.Add(new PgSqlParameter("@client_id", clientId.Value));
+                cmd.Parameters.Add(new NpgsqlParameter("client_id", clientId.Value));
 
             var rows = await ReadRowsAsync(cmd, cancellationToken);
 
@@ -71,10 +71,10 @@ public class SchemasController : ControllerBase
                 meta = new { rowCount = rows.Count }
             });
         }
-        catch (PgSqlException pgEx)
+        catch (PostgresException pgEx)
         {
             _logger.LogError(pgEx, "VIBESQL_SCHEMAS: PostgreSQL error listing versions");
-            var error = SqlStateMapper.TranslateDevartError(pgEx);
+            var error = SqlStateMapper.TranslatePostgresError(pgEx);
             return StatusCode(error.HttpStatusCode, error.ToResponse());
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -105,20 +105,20 @@ public class SchemasController : ControllerBase
 
         try
         {
-            await using var connection = new PgSqlConnection(_connectionString);
+            await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
             // Transaction: get max version, deactivate old, insert new
-            var tx = connection.BeginTransaction();
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
 
             // Get current max version
             var maxVersionSql = @"SELECT COALESCE(MAX(version), 0)
                                   FROM vibe.collection_schemas
                                   WHERE client_id = @client_id AND collection = @collection";
 
-            await using var maxCmd = new PgSqlCommand(maxVersionSql, connection, tx);
-            maxCmd.Parameters.Add(new PgSqlParameter("@client_id", request.ClientId));
-            maxCmd.Parameters.Add(new PgSqlParameter("@collection", collection));
+            await using var maxCmd = new NpgsqlCommand(maxVersionSql, connection, tx);
+            maxCmd.Parameters.Add(new NpgsqlParameter("client_id", request.ClientId));
+            maxCmd.Parameters.Add(new NpgsqlParameter("collection", collection));
 
             var maxVersion = Convert.ToInt32(await maxCmd.ExecuteScalarAsync(cancellationToken));
             var newVersion = maxVersion + 1;
@@ -128,9 +128,9 @@ public class SchemasController : ControllerBase
                                   SET is_active = false, updated_at = now()
                                   WHERE client_id = @client_id AND collection = @collection AND is_active = true";
 
-            await using var deactCmd = new PgSqlCommand(deactivateSql, connection, tx);
-            deactCmd.Parameters.Add(new PgSqlParameter("@client_id", request.ClientId));
-            deactCmd.Parameters.Add(new PgSqlParameter("@collection", collection));
+            await using var deactCmd = new NpgsqlCommand(deactivateSql, connection, tx);
+            deactCmd.Parameters.Add(new NpgsqlParameter("client_id", request.ClientId));
+            deactCmd.Parameters.Add(new NpgsqlParameter("collection", collection));
             await deactCmd.ExecuteNonQueryAsync(cancellationToken);
 
             // Insert new version
@@ -141,16 +141,16 @@ public class SchemasController : ControllerBase
                               RETURNING collection_schema_id, client_id, collection, json_schema,
                                         version, is_active, is_system, is_locked, created_at, created_by";
 
-            await using var insertCmd = new PgSqlCommand(insertSql, connection, tx);
-            insertCmd.Parameters.Add(new PgSqlParameter("@client_id", request.ClientId));
-            insertCmd.Parameters.Add(new PgSqlParameter("@collection", collection));
-            insertCmd.Parameters.Add(new PgSqlParameter("@json_schema", request.JsonSchema));
-            insertCmd.Parameters.Add(new PgSqlParameter("@version", newVersion));
-            insertCmd.Parameters.Add(new PgSqlParameter("@created_by",
+            await using var insertCmd = new NpgsqlCommand(insertSql, connection, tx);
+            insertCmd.Parameters.Add(new NpgsqlParameter("client_id", request.ClientId));
+            insertCmd.Parameters.Add(new NpgsqlParameter("collection", collection));
+            insertCmd.Parameters.Add(new NpgsqlParameter("json_schema", request.JsonSchema));
+            insertCmd.Parameters.Add(new NpgsqlParameter("version", newVersion));
+            insertCmd.Parameters.Add(new NpgsqlParameter("created_by",
                 request.CreatedBy.HasValue ? (object)request.CreatedBy.Value : DBNull.Value));
 
             var rows = await ReadRowsAsync(insertCmd, cancellationToken);
-            tx.Commit();
+            await tx.CommitAsync(cancellationToken);
 
             _logger.LogInformation(
                 "VIBESQL_SCHEMAS: Created schema v{Version} for collection '{Collection}' (client_id={ClientId})",
@@ -163,10 +163,10 @@ public class SchemasController : ControllerBase
                 meta = new { version = newVersion, previousVersion = maxVersion }
             });
         }
-        catch (PgSqlException pgEx)
+        catch (PostgresException pgEx)
         {
             _logger.LogError(pgEx, "VIBESQL_SCHEMAS: PostgreSQL error creating/updating schema");
-            var error = SqlStateMapper.TranslateDevartError(pgEx);
+            var error = SqlStateMapper.TranslatePostgresError(pgEx);
             return StatusCode(error.HttpStatusCode, error.ToResponse());
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -177,7 +177,7 @@ public class SchemasController : ControllerBase
     }
 
     private static async Task<List<Dictionary<string, object?>>> ReadRowsAsync(
-        PgSqlCommand cmd, CancellationToken cancellationToken)
+        NpgsqlCommand cmd, CancellationToken cancellationToken)
     {
         var results = new List<Dictionary<string, object?>>();
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);

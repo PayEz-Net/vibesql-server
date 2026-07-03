@@ -3,16 +3,8 @@ using Microsoft.Extensions.Configuration;
 namespace VibeSQL.Core.Query;
 
 /// <summary>
-/// Enforces query result limits and timeouts
+/// Enforces query result limits and timeouts.
 /// </summary>
-public interface IQueryLimiter
-{
-    int MaxResultRows { get; }
-    int DefaultTimeoutSeconds { get; }
-    void CheckRowLimit(int currentRowCount);
-    TimeSpan GetTimeout(string? tier = null);
-}
-
 public class QueryLimiter : IQueryLimiter
 {
     private readonly IConfiguration _configuration;
@@ -22,7 +14,14 @@ public class QueryLimiter : IQueryLimiter
         _configuration = configuration;
     }
 
+    /// <summary>
+    /// Maximum allowed result rows (default: 1000).
+    /// </summary>
     public int MaxResultRows => _configuration.GetValue("VibeQueryLimits:MaxResultRows", 1000);
+
+    /// <summary>
+    /// Default query timeout in seconds (default: 5).
+    /// </summary>
     public int DefaultTimeoutSeconds => _configuration.GetValue("VibeQueryTimeouts:DefaultSeconds", 5);
 
     public void CheckRowLimit(int currentRowCount)
