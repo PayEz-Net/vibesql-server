@@ -1,7 +1,7 @@
 {
   "$schema": "http://json.schemastore.org/launchsettings.json",
   "profiles": {
-    "VibeSQL.Server": {
+    "VibeSQL.Server-52411": {
       "commandName": "Project",
       "launchBrowser": true,
       "launchUrl": "swagger",
