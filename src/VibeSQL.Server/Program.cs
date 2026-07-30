@@ -4,6 +4,7 @@ using Serilog.Events;
 using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
 using VibeSQL.Core.Models;
+using VibeSQL.Core;
 using VibeSQL.Core.Query;
 using VibeSQL.Server.Middleware;
 
@@ -61,6 +62,12 @@ Log.Information("VIBESQL_STARTUP: Container secret auth and JWKS cache configure
 builder.Services.AddSingleton<IQueryValidator, QueryValidator>();
 builder.Services.AddSingleton<IQuerySafetyChecker, QuerySafetyChecker>();
 builder.Services.AddSingleton<IQueryLimiter, QueryLimiter>();
+
+// VibeSQL Schema Sentinel (VS-SS) — recovered from origin/npgsql-migration 2026-07-30.
+// Classifies schema changes and BLOCKS destructive ones (409, overridable via
+// X-Vibe-Force-Schema-Update) and Prohibited ones (422, never overridable).
+builder.Services.AddVibeSentinelServices(builder.Configuration);
+Log.Information("VIBESQL_STARTUP: Schema Sentinel enabled");
 builder.Services.AddScoped<IQueryExecutor, QueryExecutor>();
 builder.Services.AddScoped<IClientIdResolver, ClientIdResolver>();
 

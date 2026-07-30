@@ -17,6 +17,15 @@ public static class VibeErrorCodes
     public const string DatabaseUnavailable = "DATABASE_UNAVAILABLE";
     public const string Unauthorized = "UNAUTHORIZED";
     public const string TenantContextRequired = "TENANT_CONTEXT_REQUIRED";
+
+    /// <summary>Recovered from origin/npgsql-migration 2026-07-30 — constraint-violation taxonomy
+    /// (SQLSTATE class 23) that the binary reconstruction could not recover.</summary>
+    public const string ConstraintViolation = "CONSTRAINT_VIOLATION";
+    public const string UniqueViolation = "UNIQUE_VIOLATION";
+    public const string ForeignKeyViolation = "FOREIGN_KEY_VIOLATION";
+    public const string NotNullViolation = "NOT_NULL_VIOLATION";
+    public const string CheckViolation = "CHECK_VIOLATION";
+    public const string ExclusionViolation = "EXCLUSION_VIOLATION";
 }
 
 /// <summary>
@@ -46,6 +55,13 @@ public class VibeQueryError : Exception
         VibeErrorCodes.ResultTooLarge => 413,
         VibeErrorCodes.DocumentTooLarge => 413,
         VibeErrorCodes.Unauthorized => 401,
+        // Constraint violations (recovered 2026-07-30): conflicts are 409, client-input problems 400.
+        VibeErrorCodes.UniqueViolation => 409,
+        VibeErrorCodes.ForeignKeyViolation => 409,
+        VibeErrorCodes.ExclusionViolation => 409,
+        VibeErrorCodes.ConstraintViolation => 409,
+        VibeErrorCodes.NotNullViolation => 400,
+        VibeErrorCodes.CheckViolation => 400,
         VibeErrorCodes.TenantContextRequired => 500,
         VibeErrorCodes.InternalError => 500,
         VibeErrorCodes.ServiceUnavailable => 503,

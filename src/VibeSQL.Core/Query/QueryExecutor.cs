@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -80,11 +81,9 @@ public class QueryExecutor : IQueryExecutor
                 await setCmd.ExecuteNonQueryAsync(timeoutCts.Token);
             }
 
-            var upperSql = sql.TrimStart().ToUpperInvariant();
-            var isNonReturningDml = (upperSql.StartsWith("UPDATE") ||
-                                     upperSql.StartsWith("DELETE") ||
-                                     upperSql.StartsWith("INSERT")) &&
-                                    !upperSql.Contains("RETURNING");
+            // Recovered helper: strips comments/literals first, so a leading
+            // /* comment */ cannot hide the DML verb from this check.
+            var isNonReturningDml = IsNonQueryDml(sql);
 
             if (isNonReturningDml)
             {
@@ -206,4 +205,64 @@ public class QueryExecutor : IQueryExecutor
             return text;
         return text[..maxLength] + "...";
     }
+
+    // Recovered from origin/npgsql-migration 2026-07-30 — support for IsNonQueryDml.
+    private static readonly Regex SingleLineCommentPattern = new(@"--[^
+]*", RegexOptions.Compiled);
+    private static readonly Regex MultiLineCommentPattern = new(@"/\*[\s\S]*?\*/", RegexOptions.Compiled);
+    private static readonly Regex StringLiteralPattern = new(@"'([^']|'')*'", RegexOptions.Compiled);
+
+    // ---- Recovered from origin/npgsql-migration 2026-07-30 ----
+
+    /// <summary>
+    /// Detects DML statements (UPDATE / DELETE / INSERT) that do not have a RETURNING
+    /// clause, so they can be routed through ExecuteNonQueryAsync instead of
+    /// ExecuteReaderAsync. Raw DML without RETURNING produces no result set, and calling
+    /// ExecuteReaderAsync on a result-less command yields a reader with zero columns
+    /// and zero rows — correct but misleading (RowCount reports 0 instead of the actual
+    /// affected row count the caller almost certainly wants).
+    /// </summary>
+    /// <remarks>
+    /// Strips SQL comments and string literals before matching so that RETURNING
+    /// appearing in a comment or inside a string literal does not false-positive
+    /// the DML-without-RETURNING check, and so that RETURNING in a literal does not
+    /// incorrectly route an UPDATE through the reader path.
+    ///
+    /// KNOWN LIMITATION: CTE-wrapped DML (e.g. WITH x AS (SELECT 1) UPDATE foo SET ...)
+    /// is NOT detected as non-query because the query starts with WITH, not with
+    /// UPDATE / DELETE / INSERT. Such queries route through ExecuteReaderAsync and may
+    /// silently misbehave (zero rows returned, no affected row count). This matches the
+    /// private PayEz.VibeSql.Server.Api implementation exactly — the upstreaming program
+    /// is a mechanical port, not a detection-engine upgrade. Fixing this properly requires
+    /// real SQL parsing (parsing past leading CTEs to find the actual root statement kind),
+    /// which is out of scope. If you need CTE-wrapped DML to work today, rewrite the SQL
+    /// to avoid the leading CTE. A test case pins the current (wrong) behavior so it
+    /// cannot be silently "fixed" in a future PR without an explicit scope discussion.
+    /// </remarks>
+    internal static bool IsNonQueryDml(string sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+            return false;
+
+        var normalized = StripCommentsAndStringLiterals(sql).TrimStart().ToUpperInvariant();
+
+        var isDml = normalized.StartsWith("UPDATE", StringComparison.Ordinal)
+            || normalized.StartsWith("DELETE", StringComparison.Ordinal)
+            || normalized.StartsWith("INSERT", StringComparison.Ordinal);
+
+        if (!isDml)
+            return false;
+
+        return !normalized.Contains("RETURNING", StringComparison.Ordinal);
+    }
+
+
+    private static string StripCommentsAndStringLiterals(string sql)
+    {
+        sql = SingleLineCommentPattern.Replace(sql, "");
+        sql = MultiLineCommentPattern.Replace(sql, "");
+        sql = StringLiteralPattern.Replace(sql, "''");
+        return sql;
+    }
+
 }
