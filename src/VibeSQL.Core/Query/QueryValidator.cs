@@ -46,7 +46,7 @@ public class QueryValidator : IQueryValidator
         if (trimmed.Length > limit)
         {
             var limitKb = limit / 1024;
-            var preview = trimmed.Length > 80 ? trimmed[..80] + "..." : trimmed;
+            var preview = BuildPreview(trimmed);
             throw new VibeQueryError(
                 VibeErrorCodes.QueryTooLarge,
                 "Query too large",
@@ -55,11 +55,33 @@ public class QueryValidator : IQueryValidator
 
         if (!ValidKeywords.Any(keyword => upperTrimmed.StartsWith(keyword)))
         {
-            var preview = trimmed.Length > 80 ? trimmed[..80] + "..." : trimmed;
+            var preview = BuildPreview(trimmed);
             throw new VibeQueryError(
                 VibeErrorCodes.InvalidSQL,
                 "Invalid SQL syntax",
                 $"Query must start with a valid SQL keyword (SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, TRUNCATE). Received: {preview}");
         }
     }
+
+private const int ErrorPreviewMaxChars = 80;
+
+    // Pragmatic code-unit slicing with a high-surrogate guard: if the last
+    // code unit of the slice is a high surrogate, shorten by one so the pair
+    // is not split. See QueryValidatorTests.cs header for the Unicode
+    // trade-off rationale (Option 2 vs full rune enumeration).
+    private static string BuildPreview(string sql)
+    {
+        if (sql.Length <= ErrorPreviewMaxChars)
+        {
+            return sql;
+        }
+
+        var sliceLength = ErrorPreviewMaxChars;
+        if (char.IsHighSurrogate(sql[sliceLength - 1]))
+        {
+            sliceLength -= 1;
+        }
+        return sql[..sliceLength] + "...";
+    }
+
 }

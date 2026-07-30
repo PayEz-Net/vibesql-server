@@ -1,4 +1,8 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Npgsql;
+using VibeSQL.Core.Options;
+using VibeSQL.Core.Sentinel;
 
 namespace VibeSQL.Core.Sentinel;
 
@@ -9,27 +13,22 @@ namespace VibeSQL.Core.Sentinel;
 /// </summary>
 public class PostgresTableInspector : IDataInspector
 {
-    private readonly Func<string, CancellationToken, Task<InspectorQueryResult>> _queryFunc;
+    private readonly string _connectionString;
+    private readonly IOptions<VibeSentinelOptions> _options;
     private readonly ILogger<PostgresTableInspector>? _logger;
 
-    /// <summary>Tables above this threshold use pg_class.reltuples (approximate) instead of COUNT(*).</summary>
-    private const long ExactCountThreshold = 100_000;
-
-    /// <summary>Max total time for all inspector queries.</summary>
-    private static readonly TimeSpan TotalBudget = TimeSpan.FromMilliseconds(500);
-
-    /// <summary>Max time per individual query.</summary>
-    private static readonly TimeSpan PerQueryTimeout = TimeSpan.FromSeconds(5);
+    private VibeSentinelOptions Options => _options.Value;
 
     /// <summary>
-    /// Create inspector with a query execution function.
-    /// The function takes SQL and returns rows + scalar results.
+    /// Create inspector with a PostgreSQL connection string.
     /// </summary>
     public PostgresTableInspector(
-        Func<string, CancellationToken, Task<InspectorQueryResult>> queryFunc,
+        string connectionString,
+        IOptions<VibeSentinelOptions> options,
         ILogger<PostgresTableInspector>? logger = null)
     {
-        _queryFunc = queryFunc;
+        _connectionString = connectionString;
+        _options = options;
         _logger = logger;
     }
 
@@ -37,17 +36,22 @@ public class PostgresTableInspector : IDataInspector
     {
         var result = new DataInspectionResult();
         var startTime = DateTime.UtcNow;
+        var totalBudget = TimeSpan.FromMilliseconds(Options.InspectorBudgetMs);
+
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(ct);
 
         foreach (var item in items)
         {
             // Budget check
-            if (DateTime.UtcNow - startTime > TotalBudget)
+            if (DateTime.UtcNow - startTime > totalBudget)
             {
-                _logger?.LogWarning("SENTINEL_INSPECTOR_BUDGET: Exceeded 500ms ceiling, blocking remaining items");
+                _logger?.LogWarning("SENTINEL_INSPECTOR_BUDGET: Exceeded {BudgetMs}ms ceiling, blocking remaining items",
+                    Options.InspectorBudgetMs);
                 // Timeout = block (assume destructive)
                 result.Items.Add(new InspectedItem(
                     item, SentinelVerdict.Destructive, DataAtRisk: true, RowCount: -1,
-                    Detail: "Inspector budget exceeded — assumed destructive"));
+                    Detail: $"Inspector budget exceeded ({Options.InspectorBudgetMs}ms) — assumed destructive"));
                 continue;
             }
 
@@ -55,11 +59,11 @@ public class PostgresTableInspector : IDataInspector
             {
                 var inspected = item.Code switch
                 {
-                    SentinelTaxonomy.D300_DropTable => await InspectTableDrop(item, ct),
-                    SentinelTaxonomy.D301_DropColumn => await InspectColumnDrop(item, ct),
-                    SentinelTaxonomy.D306_NullableToNonNullHasNulls => await InspectNullCount(item, ct),
-                    SentinelTaxonomy.D311_TightenConstraint => await InspectRowCount(item, ct),
-                    SentinelTaxonomy.D303_IncompatibleTypeCast => await InspectRowCount(item, ct),
+                    SentinelTaxonomy.D300_DropTable => await InspectTableDrop(item, connection, ct),
+                    SentinelTaxonomy.D301_DropColumn => await InspectColumnDrop(item, connection, ct),
+                    SentinelTaxonomy.D306_NullableToNonNullHasNulls => await InspectNullCount(item, connection, ct),
+                    SentinelTaxonomy.D311_TightenConstraint => await InspectRowCount(item, connection, ct),
+                    SentinelTaxonomy.D303_IncompatibleTypeCast => await InspectRowCount(item, connection, ct),
                     _ => new InspectedItem(item, item.Level, DataAtRisk: false, RowCount: 0,
                         Detail: "No data check needed for this code"),
                 };
@@ -85,12 +89,12 @@ public class PostgresTableInspector : IDataInspector
         return result;
     }
 
-    private async Task<InspectedItem> InspectTableDrop(SentinelItem item, CancellationToken ct)
+    private async Task<InspectedItem> InspectTableDrop(SentinelItem item, NpgsqlConnection connection, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(item.TableName))
             return new InspectedItem(item, SentinelVerdict.Destructive, true, -1, "No table name");
 
-        var rowCount = await GetRowCount(item.TableName, ct);
+        var rowCount = await GetRowCount(item.TableName, connection, ct);
 
         if (rowCount == 0)
         {
@@ -103,7 +107,7 @@ public class PostgresTableInspector : IDataInspector
             Detail: $"Table '{item.TableName}' has {rowCount} row(s)");
     }
 
-    private async Task<InspectedItem> InspectColumnDrop(SentinelItem item, CancellationToken ct)
+    private async Task<InspectedItem> InspectColumnDrop(SentinelItem item, NpgsqlConnection connection, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(item.TableName) || string.IsNullOrEmpty(item.ColumnName))
             return new InspectedItem(item, SentinelVerdict.Destructive, true, -1, "Missing table/column name");
@@ -111,50 +115,48 @@ public class PostgresTableInspector : IDataInspector
         // Count non-null values in the column
         var sql = $"SELECT COUNT(*) AS cnt FROM \"{EscapeIdentifier(item.TableName)}\" WHERE \"{EscapeIdentifier(item.ColumnName)}\" IS NOT NULL";
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(PerQueryTimeout);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(Options.PerQueryTimeoutMs));
 
-        var result = await _queryFunc(sql, cts.Token);
-        var nonNullCount = result.ScalarLong;
+        var result = await ExecuteScalarAsync(sql, connection, cts.Token);
 
-        if (nonNullCount == 0)
+        if (result == 0)
         {
             return new InspectedItem(item, SentinelVerdict.Migration, DataAtRisk: false, RowCount: 0,
                 Detail: $"Column '{item.ColumnName}' on '{item.TableName}' has no non-null values — safe to drop");
         }
 
-        return new InspectedItem(item, SentinelVerdict.Destructive, DataAtRisk: true, RowCount: nonNullCount,
-            Detail: $"Column '{item.ColumnName}' on '{item.TableName}' has {nonNullCount} non-null value(s)");
+        return new InspectedItem(item, SentinelVerdict.Destructive, DataAtRisk: true, RowCount: result,
+            Detail: $"Column '{item.ColumnName}' on '{item.TableName}' has {result} non-null value(s)");
     }
 
-    private async Task<InspectedItem> InspectNullCount(SentinelItem item, CancellationToken ct)
+    private async Task<InspectedItem> InspectNullCount(SentinelItem item, NpgsqlConnection connection, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(item.TableName) || string.IsNullOrEmpty(item.ColumnName))
             return new InspectedItem(item, SentinelVerdict.Destructive, true, -1, "Missing table/column name");
 
         var sql = $"SELECT COUNT(*) AS cnt FROM \"{EscapeIdentifier(item.TableName)}\" WHERE \"{EscapeIdentifier(item.ColumnName)}\" IS NULL";
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(PerQueryTimeout);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(Options.PerQueryTimeoutMs));
 
-        var result = await _queryFunc(sql, cts.Token);
-        var nullCount = result.ScalarLong;
+        var result = await ExecuteScalarAsync(sql, connection, cts.Token);
 
-        if (nullCount == 0)
+        if (result == 0)
         {
             // No nulls — safe to make non-null (Migration)
             return new InspectedItem(item, SentinelVerdict.Migration, DataAtRisk: false, RowCount: 0,
                 Detail: $"Column '{item.ColumnName}' on '{item.TableName}' has no NULL values — safe to set NOT NULL");
         }
 
-        return new InspectedItem(item, SentinelVerdict.Destructive, DataAtRisk: true, RowCount: nullCount,
-            Detail: $"Column '{item.ColumnName}' on '{item.TableName}' has {nullCount} NULL value(s)");
+        return new InspectedItem(item, SentinelVerdict.Destructive, DataAtRisk: true, RowCount: result,
+            Detail: $"Column '{item.ColumnName}' on '{item.TableName}' has {result} NULL value(s)");
     }
 
-    private async Task<InspectedItem> InspectRowCount(SentinelItem item, CancellationToken ct)
+    private async Task<InspectedItem> InspectRowCount(SentinelItem item, NpgsqlConnection connection, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(item.TableName))
             return new InspectedItem(item, SentinelVerdict.Destructive, true, -1, "No table name");
 
-        var rowCount = await GetRowCount(item.TableName, ct);
+        var rowCount = await GetRowCount(item.TableName, connection, ct);
 
         if (rowCount == 0)
         {
@@ -169,18 +171,17 @@ public class PostgresTableInspector : IDataInspector
     /// <summary>
     /// Get row count: use pg_class.reltuples for large tables, exact COUNT(*) for small ones.
     /// </summary>
-    private async Task<long> GetRowCount(string tableName, CancellationToken ct)
+    private async Task<long> GetRowCount(string tableName, NpgsqlConnection connection, CancellationToken ct)
     {
         // First get approximate count from pg_class
         var approxSql = $"SELECT reltuples::bigint AS cnt FROM pg_class WHERE relname = '{EscapeValue(tableName)}'";
         using var cts1 = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts1.CancelAfter(PerQueryTimeout);
+        cts1.CancelAfter(TimeSpan.FromMilliseconds(Options.PerQueryTimeoutMs));
 
-        var approxResult = await _queryFunc(approxSql, cts1.Token);
-        var approxCount = approxResult.ScalarLong;
+        var approxCount = await ExecuteScalarAsync(approxSql, connection, cts1.Token);
 
         // If approximate says large, trust it
-        if (approxCount > ExactCountThreshold)
+        if (approxCount > Options.ExactCountThreshold)
         {
             _logger?.LogDebug("SENTINEL_INSPECTOR: Table '{Table}' approximate count {Count} (using pg_class)", tableName, approxCount);
             return approxCount;
@@ -189,23 +190,18 @@ public class PostgresTableInspector : IDataInspector
         // Small table — get exact count
         var exactSql = $"SELECT COUNT(*) AS cnt FROM \"{EscapeIdentifier(tableName)}\"";
         using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts2.CancelAfter(PerQueryTimeout);
+        cts2.CancelAfter(TimeSpan.FromMilliseconds(Options.PerQueryTimeoutMs));
 
-        var exactResult = await _queryFunc(exactSql, cts2.Token);
-        return exactResult.ScalarLong;
+        return await ExecuteScalarAsync(exactSql, connection, cts2.Token);
+    }
+
+    private async Task<long> ExecuteScalarAsync(string sql, NpgsqlConnection connection, CancellationToken ct)
+    {
+        await using var cmd = new NpgsqlCommand(sql, connection);
+        var result = await cmd.ExecuteScalarAsync(ct);
+        return result == null || result == DBNull.Value ? 0 : Convert.ToInt64(result);
     }
 
     private static string EscapeIdentifier(string name) => name.Replace("\"", "\"\"");
     private static string EscapeValue(string value) => value.Replace("'", "''");
-}
-
-/// <summary>
-/// Result from an inspector SQL query.
-/// </summary>
-public class InspectorQueryResult
-{
-    public long ScalarLong { get; init; }
-    public List<Dictionary<string, object?>>? Rows { get; init; }
-
-    public static InspectorQueryResult FromScalar(long value) => new() { ScalarLong = value };
 }

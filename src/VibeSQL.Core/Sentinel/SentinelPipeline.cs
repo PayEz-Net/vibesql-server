@@ -58,8 +58,18 @@ public class SentinelPipeline
 
         // Step 4: Data inspection (if inspector available and items need it)
         DataInspectionResult? inspection = null;
-        if (_inspector != null && classification.RequiresDataCheck)
+        if (classification.RequiresDataCheck)
         {
+            if (_inspector == null)
+            {
+                // Q3: No inspector registered = cannot downgrade = remain blocked
+                _logger?.LogWarning("SENTINEL_NO_INSPECTOR: Destructive changes blocked (no IDataInspector registered). " +
+                    "{Count} items require data check but cannot be inspected.",
+                    classification.DataCheckItems.Count);
+                // Return without downgrade - destructive changes stay blocked
+                return SentinelVerdictResult.FromInspection(diff, classification, null, classification.Verdict);
+            }
+
             inspection = await _inspector.InspectAsync(classification.DataCheckItems, ct);
 
             // Re-evaluate verdict based on inspection

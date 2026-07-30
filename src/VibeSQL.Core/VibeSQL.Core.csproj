@@ -16,12 +16,12 @@
   <ItemGroup>
     <!-- PostgreSQL drivers -->
     <!-- Npgsql: raw SQL query engine (VibeSQL Server API) -->
-    <PackageReference Include="Npgsql" Version="9.0.2" />
+    <PackageReference Include="Npgsql" Version="9.0.3" />
     <!-- Devart dotConnect: EF Core repositories and migrations -->
     <PackageReference Include="Devart.Data.PostgreSql" Version="8.4.193" />
 
     <!-- Entity Framework Core -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.1" />
     <PackageReference Include="Devart.Data.PostgreSql.EFCore" Version="8.4.193" />
 
     <!-- HTML Sanitization -->
@@ -32,16 +32,21 @@
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
 
     <!-- Microsoft extensions -->
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="9.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.1" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- SQL migrations as embedded resources -->
     <EmbeddedResource Include="Data\Migrations\**\*.sql" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VibeSQL.Core.Tests" />
   </ItemGroup>
 
 </Project>

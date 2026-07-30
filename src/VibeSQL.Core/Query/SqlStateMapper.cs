@@ -1,3 +1,4 @@
+using System;
 using System.Text.RegularExpressions;
 using Npgsql;
 
@@ -39,6 +40,18 @@ public static class SqlStateMapper
         // Document size errors
         ["54000"] = VibeErrorCodes.DocumentTooLarge,
         ["54001"] = VibeErrorCodes.DocumentTooLarge,
+
+        // Constraint violations (SQLSTATE class 23) — recovered from origin/npgsql-migration
+        // 2026-07-30. Absent from the binary reconstruction; these are what let a caller tell
+        // "you violated a unique index" from "something went wrong".
+        ["23000"] = VibeErrorCodes.ConstraintViolation,       // integrity_constraint_violation (generic)
+        ["23001"] = VibeErrorCodes.ConstraintViolation,       // restrict_violation
+        ["23502"] = VibeErrorCodes.NotNullViolation,          // not_null_violation
+        ["23503"] = VibeErrorCodes.ForeignKeyViolation,       // foreign_key_violation
+        ["23505"] = VibeErrorCodes.UniqueViolation,           // unique_violation
+        ["23514"] = VibeErrorCodes.CheckViolation,            // check_violation
+        ["23P01"] = VibeErrorCodes.ExclusionViolation,        // exclusion_violation
+
     };
 
     /// <summary>
@@ -128,6 +141,19 @@ public static class SqlStateMapper
         VibeErrorCodes.QueryTimeout => "Query execution timeout",
         VibeErrorCodes.DatabaseUnavailable => "Database is unavailable",
         VibeErrorCodes.DocumentTooLarge => "Document too large",
+        VibeErrorCodes.UniqueViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Unique constraint violated",
+        VibeErrorCodes.ForeignKeyViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Foreign key constraint violated",
+        VibeErrorCodes.NotNullViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Not-null constraint violated",
+        VibeErrorCodes.CheckViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Check constraint violated",
+        VibeErrorCodes.ExclusionViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Exclusion constraint violated",
+        VibeErrorCodes.ConstraintViolation => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "Integrity constraint violated",
         _ => !string.IsNullOrEmpty(pgMessage) ? pgMessage : "An error occurred"
     };
+
+    /// <summary>
+    /// True when the SQLSTATE is any integrity-constraint violation (class 23).
+    /// Recovered from origin/npgsql-migration 2026-07-30.
+    /// </summary>
+    public static bool IsConstraintViolation(string? sqlState) =>
+        !string.IsNullOrEmpty(sqlState) && sqlState.StartsWith("23", StringComparison.Ordinal);
 }
