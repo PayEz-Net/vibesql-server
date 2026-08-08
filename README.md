@@ -381,6 +381,52 @@ SERILOG_MINIMUM_LEVEL="Information"
 - **virtual_indexes** — Virtual index definitions
 - **feature_usage_logs** — Usage tracking
 
+### Referential Integrity (`x-vibe-fk`)
+
+VibeSQL keeps a relational guarantee on a document store: **foreign keys are
+declared in the collection schema and enforced when the document is written.**
+
+A physical PostgreSQL foreign key is not available here. `users`, `comments` and
+the rest are *logical* tables — rows in a single JSONB column, discriminated by
+`collection` + `table_name` and partitioned by tenant. You cannot point an engine
+constraint at a field inside a JSON document, so the integrity moves up one layer
+to where the logical model actually exists.
+
+Declare it as a JSON Schema vendor extension on the referencing field:
+
+```json
+"user_id": {
+  "type": "integer",
+  "x-vibe-fk": "users.user_id"
+}
+```
+
+A write naming a parent that does not exist is rejected before it lands:
+
+```
+[FK_VALIDATION_FAILED] Foreign key validation failed:
+user_id=999999 references non-existent users record.
+```
+
+Four behaviours are worth knowing, because none of them is obvious:
+
+| Behaviour | Why |
+|---|---|
+| **Delta-aware on update** | PATCH validates only the FK fields whose value the write *changes*. A pre-existing dangling reference the caller never touched must not fail an unrelated edit. CREATE validates every FK. |
+| **Zero is always invalid** | `fk = 0` is rejected without a lookup, across int/long/double. `0` is a phantom sentinel, never a real parent. |
+| **Hybrid resolution** | Parent tables migrated out of the doc-store into relational storage resolve against the real table, tenant-scoped; everything else resolves in the doc-store. Referential integrity therefore survives a partially-completed migration — normally the point at which it breaks. |
+| **Resolves the logical PK** | Matching is on `data.<pk>` (the declared `x-vibe-pk` inside JSONB), never the physical `vibe.documents` column. This matters for `user_id`, where the physical column holds the document *owner* and the logical PK is the sequence-minted `data.user_id`. They are not the same value. |
+
+Nullable FKs are permitted — a null reference is not a dangling one.
+
+> **Where this is enforced today.** The declaration is part of the collection
+> schema this server owns, but the enforcing code currently lives in the API tier
+> in front of it (`VibeDocumentService`), not in this repository. A deployment
+> that writes documents through VibeSQL server directly therefore carries the
+> `x-vibe-fk` annotations **without validation behind them**. Treat the annotation
+> as authoritative for intent and check your write path before relying on it as a
+> guarantee. Moving enforcement into this server is the open work.
+
 ### Migrations
 
 ```bash
