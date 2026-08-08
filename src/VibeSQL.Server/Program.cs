@@ -11,6 +11,42 @@ using VibeSQL.Server.Middleware;
 var builder = WebApplication.CreateBuilder(args);
 
 // ========================================
+// Azure Key Vault (optional — off unless configured)
+// ========================================
+// The deployed service fetches its own secrets AT STARTUP under its OWN identity.
+// They are deliberately NOT copied into container config or a k8s secret: the vault
+// holds one copy, every service reads it, and rotation is a single write. Duplicating
+// a secret into a manifest forks it and silently breaks rotation — the copy keeps
+// working after the original is rotated, which is worse than failing.
+//
+// On AKS the credential comes from workload identity: the deployment sets
+// AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_FEDERATED_TOKEN_FILE and binds a service
+// account, and DefaultAzureCredential picks the federated token up with no code.
+// The pod has authority to read the vault; nothing else needs it.
+//
+// ENTIRELY OPTIONAL. With AzureKeyVault:UseKeyVault unset or false this block does
+// nothing and the server runs on plain configuration — which is how it runs on 93 and
+// how any non-Azure deployment runs it. That conditionality is why this can live in
+// the OSS product without making it Azure-only.
+//
+// Secrets land as ordinary configuration keys, so KV secret "ContainersKey" is read
+// as Configuration["ContainersKey"] below.
+var useKeyVault = builder.Configuration.GetValue<bool>("AzureKeyVault:UseKeyVault");
+var vaultUri = builder.Configuration["AzureKeyVault:VaultUri"];
+if (useKeyVault && !string.IsNullOrWhiteSpace(vaultUri))
+{
+    // FAIL LOUD. If the vault is configured but unreachable — wrong identity, missing
+    // federated token, network policy — starting anyway would produce a service with
+    // no container secret, and the secret check below would then report "not
+    // configured", sending whoever debugs it to the manifest instead of to the
+    // identity binding that actually failed.
+    builder.Configuration.AddAzureKeyVault(
+        new Uri(vaultUri),
+        new Azure.Identity.DefaultAzureCredential());
+    Console.WriteLine($"VIBESQL_STARTUP: Key Vault configured ({vaultUri})");
+}
+
+// ========================================
 // Serilog Logging
 // ========================================
 var graylogHost = builder.Configuration["Logging:Graylog:HostnameOrAddress"];
@@ -52,9 +88,38 @@ builder.Services.AddHttpClient();
 // "Authorization: Secret " arrives as "Secret" and never matches the "Secret "
 // prefix — it is an auth DEADLOCK: nothing can authenticate via the Secret scheme,
 // and the service reports itself healthy. Measured 2026-08-08 against a local F5 run.
+// Three sources, in order of specificity. All three treat empty as absent.
+//   1. VIBESQL_CONTAINER_SECRET  — env, for local/dev and non-Azure hosts
+//   2. VibeSQL:ContainerSecret   — plain configuration
+//   3. VibeSQL:ContainerSecretName -> the secret of that NAME in Key Vault
+// (3) is how the deployed service gets it: the manifest names "ContainersKey" and the
+// pod reads it under its own workload identity. The value is never written into
+// container config, so rotation happens once in the vault and every service picks it
+// up on next start.
 var containerSecret = Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET") is { Length: > 0 } envSecret
     ? envSecret
     : builder.Configuration["VibeSQL:ContainerSecret"];
+
+if (string.IsNullOrWhiteSpace(containerSecret))
+{
+    var secretName = builder.Configuration["VibeSQL:ContainerSecretName"];
+    if (!string.IsNullOrWhiteSpace(secretName))
+    {
+        // Key Vault secrets are flattened into configuration by the provider above,
+        // so this is a plain lookup — not a second vault round-trip.
+        containerSecret = builder.Configuration[secretName];
+        if (string.IsNullOrWhiteSpace(containerSecret))
+        {
+            throw new InvalidOperationException(
+                $"VibeSQL:ContainerSecretName is '{secretName}' but no such secret was " +
+                "loaded. The Key Vault provider either is not enabled " +
+                "(AzureKeyVault:UseKeyVault) or the pod's identity cannot read that " +
+                "secret. Failing here rather than reporting 'secret not configured', " +
+                "which would point at the manifest instead of the identity binding.");
+        }
+        Log.Information("VIBESQL_STARTUP: container secret loaded from Key Vault as {SecretName}", secretName);
+    }
+}
 
 if (string.IsNullOrWhiteSpace(containerSecret))
 {

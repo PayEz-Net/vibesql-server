@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <!-- Azure App Configuration (optional - for cloud deployments) -->
+    <PackageReference Include="Azure.Extensions.AspNetCore.Configuration.Secrets" Version="1.5.1" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.0.0" />
 
     <!-- PostgreSQL driver -->
