@@ -44,11 +44,26 @@ builder.Services.AddHttpClient();
 // shared secret for service-to-service auth, with optional
 // JWT Bearer validation against cached IDP JWKS.
 // ========================================
-var containerSecret = builder.Configuration["VibeSQL:ContainerSecret"]
-    ?? Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET")
-    ?? throw new InvalidOperationException(
+// EMPTY IS UNSET. `??` only falls through on null, and both appsettings.json and
+// appsettings.Development.json ship "ContainerSecret": "" — a non-null empty string.
+// The consequence was that the env-var fallback was UNREACHABLE and the throw never
+// fired: the service booted with an empty secret and logged "Container secret auth
+// configured". It is not an auth bypass — ASP.NET trims the header value, so
+// "Authorization: Secret " arrives as "Secret" and never matches the "Secret "
+// prefix — it is an auth DEADLOCK: nothing can authenticate via the Secret scheme,
+// and the service reports itself healthy. Measured 2026-08-08 against a local F5 run.
+var containerSecret = Environment.GetEnvironmentVariable("VIBESQL_CONTAINER_SECRET") is { Length: > 0 } envSecret
+    ? envSecret
+    : builder.Configuration["VibeSQL:ContainerSecret"];
+
+if (string.IsNullOrWhiteSpace(containerSecret))
+{
+    throw new InvalidOperationException(
         "Container secret not configured. Set VibeSQL:ContainerSecret in appsettings " +
-        "or VIBESQL_CONTAINER_SECRET environment variable.");
+        "or VIBESQL_CONTAINER_SECRET environment variable. An empty or whitespace value " +
+        "is treated as unset: it would start a service on which Secret-scheme auth can " +
+        "never succeed.");
+}
 
 var secretConfig = new VibeContainerSecretConfig { Secret = containerSecret };
 builder.Services.AddSingleton(secretConfig);

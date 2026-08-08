@@ -55,6 +55,29 @@ public class DocumentsController : ControllerBase
             await using var connection = new NpgsqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
+            // Set the tenant context this connection operates under, BEFORE any statement
+            // touches vibe.documents.
+            //
+            // Every tenant table carries RLS with FORCE and a tenant_isolation policy of
+            // (client_id = current_setting('app.client_id')::int OR client_id = 0). Without
+            // this, current_setting returns NULL, the policy evaluates false, and the INSERT
+            // is rejected with "new row violates row-level security policy".
+            //
+            // It was invisible while the service connected as a superuser — superusers bypass
+            // RLS entirely, so the policy never ran. It surfaced the moment the connection
+            // used a least-privilege role. Anywhere this path currently works without setting
+            // context, it is working because the role bypasses tenant isolation.
+            //
+            // is_local: false — the setting must outlive an implicit transaction and apply to
+            // every command on this connection, including the audit write below.
+            await using (var ctx = new NpgsqlCommand(
+                "SELECT set_config('app.client_id', @client_id, false)", connection))
+            {
+                ctx.Parameters.Add(new NpgsqlParameter("client_id",
+                    resolvedClientId.Value.ToString()));
+                await ctx.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             var sql = @"INSERT INTO vibe.documents
                             (client_id, user_id, collection, table_name, data, collection_schema_id, created_at, created_by)
                         VALUES
