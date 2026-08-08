@@ -3,10 +3,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using VibeSQL.Core.Data.Repositories;
 using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Options;
 using VibeSQL.Core.Services;
-using VibeSQL.Core.Sentinel;
 using VibeSQL.Core.Sentinel;
 
 namespace VibeSQL.Core;
@@ -30,6 +30,19 @@ public static class ServiceCollectionExtensions
 
         // Schema Sentinel service for health monitoring, validation, and cleanup
         services.AddScoped<IVibeSchemaSentinelService, VibeSchemaSentinelService>();
+
+        // Audit log repository (PCI DSS Req 10 / SOC CC7 evidence).
+        //
+        // This was implemented, entity-configured, table-created, indexed and
+        // RLS-protected — and never registered, so nothing could inject it and
+        // nothing ever called LogAsync. Measured 2026-08-08: vibe.audit_logs
+        // held 99 rows, newest 2026-06-17, on a box under daily development.
+        // A control that cannot be resolved from the container is not a control.
+        //
+        // NOTE: registration makes the repository INJECTABLE. It does not make
+        // audit rows appear — LogAsync still has no callers. Instrumenting the
+        // auditable operations is the other half of this fix.
+        services.AddScoped<IVibeAuditLogRepository, VibeAuditLogRepository>();
 
         return services;
     }
