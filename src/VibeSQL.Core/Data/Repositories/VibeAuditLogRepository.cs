@@ -22,11 +22,71 @@ public class VibeAuditLogRepository : IVibeAuditLogRepository
 
     public async Task LogAsync(AuditLog auditLog)
     {
+        await ValidateAdminUserAsync(auditLog.ClientId, auditLog.AdminUserId);
+
         _context.AuditLogs.Add(auditLog);
         await _context.SaveChangesAsync();
 
         _logger.LogDebug("AUDIT_LOG: {Category}/{Action} by user {UserId} on {TargetType}:{TargetId}",
             auditLog.Category, auditLog.Action, auditLog.AdminUserId, auditLog.TargetType, auditLog.TargetId);
+    }
+
+    /// <summary>
+    /// Verifies AdminUserId resolves to a real user before the audit row is written.
+    /// This is the audit-side equivalent of an <c>x-vibe-fk</c> reference constraint —
+    /// audit_logs is a hard relational table, so it never passes through the document
+    /// write path where those are enforced, and a physical FK is impossible because the
+    /// parent (<c>vibe_app.users</c>) is a logical table inside JSONB.
+    /// </summary>
+    /// <remarks>
+    /// TENANT SCOPING IS LOAD-BEARING. `user_id` is unique PER TENANT, not globally —
+    /// measured 2026-08-08: user_id 1001 exists under BOTH client 8 and client 9 as two
+    /// different people. An unscoped existence check would happily resolve one tenant's
+    /// audit row against another tenant's user and report healthy referential integrity
+    /// while silently crossing the boundary. Always filter on client_id.
+    ///
+    /// Matching is on <c>data->>'user_id'</c> (the logical PK declared by x-vibe-pk),
+    /// NOT the physical vibe.documents.user_id column — that column is the document
+    /// OWNER (the bearer's identity), which is a different value entirely.
+    ///
+    /// Zero is rejected without a lookup, mirroring the x-vibe-fk validator: 0 is a
+    /// phantom sentinel that has never referred to a real record.
+    /// </remarks>
+    private async Task ValidateAdminUserAsync(int clientId, int adminUserId)
+    {
+        if (adminUserId == 0)
+        {
+            throw new InvalidOperationException(
+                "Audit validation failed: admin_user_id=0 is invalid. " +
+                "0 is a sentinel, not a user. System-initiated events must reference the " +
+                "system user (type='system') for their tenant.");
+        }
+
+        // FromSqlRaw over the Documents set rather than SqlQueryRaw: the Devart provider
+        // does not expose SqlQueryRaw on DatabaseFacade, and FromSqlRaw is the pattern
+        // already used elsewhere in this layer (VibeDocumentRepository).
+        const string sql = @"
+            SELECT * FROM vibe.documents
+            WHERE client_id = {0}
+              AND collection = 'vibe_app'
+              AND table_name = 'users'
+              AND deleted_at IS NULL
+              AND (data->>'user_id')::int = {1}";
+
+        var exists = await _context.Documents
+            .FromSqlRaw(sql, clientId, adminUserId)
+            .AsNoTracking()
+            .AnyAsync();
+
+        if (!exists)
+        {
+            _logger.LogWarning(
+                "AUDIT_FK_VALIDATION_FAILED: admin_user_id={AdminUserId} does not resolve to a " +
+                "vibe_app.users record for client {ClientId}", adminUserId, clientId);
+            throw new InvalidOperationException(
+                $"Audit validation failed: admin_user_id={adminUserId} references a non-existent " +
+                $"users record for client {clientId}.");
+        }
     }
 
     public async Task<(List<AuditLog> Logs, int TotalCount)> QueryAsync(
