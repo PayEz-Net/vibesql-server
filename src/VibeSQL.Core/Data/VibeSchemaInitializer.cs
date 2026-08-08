@@ -10,6 +10,16 @@ namespace VibeSQL.Core.Data;
 /// security and the per-tenant system user exist on startup.
 /// </summary>
 /// <remarks>
+/// NOT REGISTERED. Nothing in Program.cs adds this as a hosted service, so as of
+/// 2026-08-08 it does not run. That is deliberate, not an oversight: it executes DDL,
+/// and the service now connects as vsql_server_user, which has no DDL rights — wiring
+/// it unchanged means the CREATE fails, the catch calls Environment.Exit(1), and the
+/// container crash-loops on boot. Provisioning needs an owner-level connection that
+/// this class does not currently take.
+///
+/// Until that is resolved, schema provisioning and system-user seeding are MANUAL.
+/// Do not read the code below as a description of what happens at startup.
+///
 /// Pattern borrowed from vsql-cache's SchemaInitializer: a BackgroundService that
 /// runs idempotent multi-statement DDL through a single NpgsqlCommand and fails
 /// fast. Two constraints inherited with it, both load-bearing:

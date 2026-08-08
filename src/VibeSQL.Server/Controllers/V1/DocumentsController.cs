@@ -218,7 +218,11 @@ public class DocumentsController : ControllerBase
             throw new InvalidOperationException(
                 $"Audit write produced no row for client {clientId}: the tenant has no " +
                 "type='system' user to attribute an unauthenticated document insert to. " +
-                "Seed one (VibeSchemaInitializer does this on boot) before accepting writes.");
+                "Seed a vibe_app.users document with data->>'type' = 'system' for this " +
+                "client before accepting writes. NOTE: VibeSchemaInitializer contains that " +
+                "seed logic but is NOT registered in Program.cs — it runs DDL, which the " +
+                "least-privilege vsql_server_user cannot do, so wiring it as-is would fail " +
+                "the service on boot. Seeding is a manual step today.");
         }
     }
 

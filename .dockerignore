@@ -1,0 +1,19 @@
+# Build outputs. The Dockerfile does `COPY . .` and then compiles inside the
+# image, so without this it copies Windows-built bin/ and obj/ into a Linux
+# build. That is how a stale artifact survives a rebuild and produces a green
+# result that does not correspond to the source.
+**/bin/
+**/obj/
+
+.git/
+.vs/
+.idea/
+**/.vscode/
+
+# Local developer state, never part of an image.
+**/*.user
+**/secrets.json
+
+# NOT ignored, and load-bearing: scripts/base-schema.v2.sql is pulled in as an
+# EmbeddedResource by VibeSQL.Core.csproj. If it stops reaching the build
+# context the resource lookup fails at runtime, not at compile time.
