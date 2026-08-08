@@ -74,19 +74,26 @@ public class DocumentsController : ControllerBase
             cmd.Parameters.Add(new NpgsqlParameter("created_by",
                 request.CreatedBy.HasValue ? (object)request.CreatedBy.Value : DBNull.Value));
 
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
             Dictionary<string, object?>? row = null;
 
-            if (await reader.ReadAsync(cancellationToken))
+            // Reader is scoped tightly: Npgsql has no MARS, so the audit command below
+            // cannot run on this connection while a reader is open.
+            await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken))
             {
-                row = new Dictionary<string, object?>();
-                var columnCount = reader.FieldCount;
-                for (int i = 0; i < columnCount; i++)
+                if (await reader.ReadAsync(cancellationToken))
                 {
-                    var value = reader.GetValue(i);
-                    row[reader.GetName(i)] = value == DBNull.Value ? null : ConvertValue(value);
+                    row = new Dictionary<string, object?>();
+                    var columnCount = reader.FieldCount;
+                    for (int i = 0; i < columnCount; i++)
+                    {
+                        var value = reader.GetValue(i);
+                        row[reader.GetName(i)] = value == DBNull.Value ? null : ConvertValue(value);
+                    }
                 }
             }
+
+            await WriteAuditAsync(connection, resolvedClientId.Value, request,
+                row? ["document_id"], collection, table, cancellationToken);
 
             _logger.LogInformation(
                 "VIBESQL_DOCUMENTS: Inserted document into {Collection}/{Table} (client_id={ClientId})",
@@ -109,6 +116,86 @@ public class DocumentsController : ControllerBase
         {
             _logger.LogError(ex, "VIBESQL_DOCUMENTS: Unexpected error inserting document");
             return StatusCode(500, ErrorResponse("INTERNAL_ERROR", "An internal error occurred"));
+        }
+    }
+
+    /// <summary>
+    /// Writes the Req 10 audit row for a document insert.
+    /// </summary>
+    /// <remarks>
+    /// This is the first producer for vibe.audit_logs. The table, its indexes, its RLS
+    /// policy and its repository all existed for months with nothing writing to them —
+    /// 99 rows, newest 2026-06-17, on a box under daily development. Registering the
+    /// repository made it resolvable; it did not make audit rows appear. This does.
+    ///
+    /// It writes here, in the controller, rather than through IVibeAuditLogRepository,
+    /// because THIS is the live write path: DocumentsController talks to Postgres
+    /// directly with Npgsql and never touches the repository layer. Auditing from the
+    /// repository would have produced a trail of schema migrations and nothing else —
+    /// a call site that never fires, which is the exact defect this work exists to undo.
+    ///
+    /// admin_user_id falls back to the tenant's type='system' user, resolved IN the
+    /// statement. Document inserts can legitimately carry no authenticated caller, and
+    /// admin_user_id is NOT NULL and must reference a real user in the SAME tenant
+    /// (user_id is unique per tenant, not globally).
+    ///
+    /// FAILS LOUDLY ON ZERO ROWS. If the tenant has no system user the SELECT yields
+    /// nothing and the INSERT silently writes nothing — an audit gap that reports
+    /// success. The row count is checked and throws instead.
+    /// </remarks>
+    private async Task WriteAuditAsync(
+        NpgsqlConnection connection,
+        int clientId,
+        DocumentInsertRequest request,
+        object? documentId,
+        string collection,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        const string auditSql = @"
+            INSERT INTO vibe.audit_logs
+                (client_id, admin_user_id, admin_email, category, action,
+                 target_type, target_id, description, is_success,
+                 ip_address, user_agent, request_path, http_method, created_at)
+            SELECT @client_id,
+                   COALESCE(@admin_user_id, sys.uid),
+                   COALESCE(@admin_email,   sys.email),
+                   'data', 'document.insert',
+                   'document', @target_id, @description, true,
+                   @ip_address, @user_agent, @request_path, @http_method, now()
+            FROM (SELECT (data->>'user_id')::int AS uid, data->>'email' AS email
+                    FROM vibe.documents
+                   WHERE client_id = @client_id
+                     AND collection = 'vibe_app' AND table_name = 'users'
+                     AND deleted_at IS NULL
+                     AND data->>'type' = 'system'
+                   LIMIT 1) sys";
+
+        await using var cmd = new NpgsqlCommand(auditSql, connection);
+        cmd.Parameters.Add(new NpgsqlParameter("client_id", clientId));
+        cmd.Parameters.Add(new NpgsqlParameter("admin_user_id",
+            request.CreatedBy.HasValue ? request.CreatedBy.Value
+            : request.UserId.HasValue ? request.UserId.Value
+            : (object)DBNull.Value));
+        cmd.Parameters.Add(new NpgsqlParameter("admin_email", DBNull.Value));
+        cmd.Parameters.Add(new NpgsqlParameter("target_id",
+            documentId?.ToString() ?? "unknown"));
+        cmd.Parameters.Add(new NpgsqlParameter("description",
+            $"Document inserted into {collection}/{table}"));
+        cmd.Parameters.Add(new NpgsqlParameter("ip_address",
+            HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown"));
+        cmd.Parameters.Add(new NpgsqlParameter("user_agent",
+            HttpContext.Request.Headers.UserAgent.ToString() is { Length: > 0 } ua ? ua : "unknown"));
+        cmd.Parameters.Add(new NpgsqlParameter("request_path", HttpContext.Request.Path.ToString()));
+        cmd.Parameters.Add(new NpgsqlParameter("http_method", HttpContext.Request.Method));
+
+        var written = await cmd.ExecuteNonQueryAsync(cancellationToken);
+        if (written == 0)
+        {
+            throw new InvalidOperationException(
+                $"Audit write produced no row for client {clientId}: the tenant has no " +
+                "type='system' user to attribute an unauthenticated document insert to. " +
+                "Seed one (VibeSchemaInitializer does this on boot) before accepting writes.");
         }
     }
 
