@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using VibeSQL.Core.Entities;
+using VibeSQL.Core.Exceptions;
 using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Data;
 
@@ -13,11 +14,31 @@ public class VibeDocumentRepository : IVibeDocumentRepository
 {
     private readonly VibeDbContext _context;
     private readonly ILogger<VibeDocumentRepository> _logger;
+    private readonly IClientReferenceValidator _clientReferenceValidator;
 
-    public VibeDocumentRepository(VibeDbContext context, ILogger<VibeDocumentRepository> logger)
+    /// <summary>
+    /// TEMPORARY carve-out for the pre-existing client_id=0 sentinel (card 186212 /
+    /// M-201). client_id 0 was used, undocumented, as a code-only "global" marker before
+    /// this validator existed -- 128 live rows at client_id=0 in vibe.documents_default on
+    /// 93 as of 2026-08-09. docs/cross-schema-reference-constraints.md's target end-state is
+    /// client_id IS NULL for genuinely-global rows, with 0 retired entirely (4-step
+    /// migration: move mis-parked rows to their real client, move legitimately-global rows
+    /// to NULL, make the column nullable, THEN enforce). That migration has NOT run yet --
+    /// it touches live production data and needs its own reviewed card, not a 3am solo edit.
+    /// Until it does, rejecting client_id=0 here would break every caller still relying on
+    /// the current sentinel. Remove this carve-out in the same change that retires the
+    /// client_id=0 sentinel; do not let it become permanent by default.
+    /// </summary>
+    private const int LegacyGlobalSentinelClientId = 0;
+
+    public VibeDocumentRepository(
+        VibeDbContext context,
+        ILogger<VibeDocumentRepository> logger,
+        IClientReferenceValidator clientReferenceValidator)
     {
         _context = context;
         _logger = logger;
+        _clientReferenceValidator = clientReferenceValidator;
     }
 
     public async Task<VibeDocument?> GetByIdAsync(int clientId, string collection, string tableName, int documentId)
@@ -54,6 +75,22 @@ public class VibeDocumentRepository : IVibeDocumentRepository
     public async Task<(VibeDocument Document, Dictionary<string, object>? GeneratedKeys)> CreateAsync(
         int clientId, int userId, string collection, string tableName, string data, int? createdBy)
     {
+        // Mode B cross-schema reference constraint (docs/cross-schema-reference-constraints.md,
+        // card 186212 / Sentinel M-201): refuse a write naming a client_id that does not exist,
+        // instead of silently orphaning tenant data. See LegacyGlobalSentinelClientId for the
+        // one deliberate, temporary exception.
+        if (clientId != LegacyGlobalSentinelClientId)
+        {
+            var clientExists = await _clientReferenceValidator.ClientExistsAsync(clientId);
+            if (!clientExists)
+            {
+                _logger.LogWarning(
+                    "VIBE_DOC_UNKNOWN_CLIENT: Refused document write for non-existent client. ClientId: {ClientId}, Collection: {Collection}, Table: {TableName}",
+                    clientId, collection, tableName);
+                throw new UnknownClientReferenceException(clientId);
+            }
+        }
+
         var document = new VibeDocument
         {
             ClientId = clientId,

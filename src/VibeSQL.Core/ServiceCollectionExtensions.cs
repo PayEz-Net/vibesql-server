@@ -21,6 +21,10 @@ public static class ServiceCollectionExtensions
         // Schema migration service for lazy document migration
         services.AddScoped<IVibeSchemaMigrationService, VibeSchemaMigrationService>();
 
+        // Mode B cross-schema reference-constraint validator (docs/cross-schema-reference-constraints.md,
+        // card 186212 / Sentinel M-201). Required by VibeDocumentRepository.
+        services.AddScoped<IClientReferenceValidator, ClientReferenceValidator>();
+
         return services;
     }
 }

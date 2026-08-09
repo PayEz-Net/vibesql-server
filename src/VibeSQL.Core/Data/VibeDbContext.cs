@@ -1,6 +1,7 @@
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using VibeSQL.Core.Entities;
+using VibeSQL.Core.Entities.IdentityReference;
 using VibeSQL.Core.Data.Extensions;
 using VibeSQL.Core.Data.Repositories;
 
@@ -26,6 +27,12 @@ public class VibeDbContext : DbContext
     public virtual DbSet<AuditLog> AuditLogs { get; set; } = null!;
     public virtual DbSet<GlobalLogSettings> GlobalLogSettings { get; set; } = null!;
 
+    /// <summary>
+    /// Read-only shadow mapping of identity.clients (Mode B cross-schema reference
+    /// constraint, docs/cross-schema-reference-constraints.md). Never written to from here.
+    /// </summary>
+    public virtual DbSet<IdentityClientReference> IdentityClientReferences { get; set; } = null!;
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -35,6 +42,9 @@ public class VibeDbContext : DbContext
 
         // Apply all Vibe-specific entity configurations from EntityConfigurations/Vibe folder
         modelBuilder.ApplySchemaConfigurations("Vibe");
+
+        // Apply the identity.clients reference-entity mapping (Mode B virtual FK)
+        modelBuilder.ApplySchemaConfigurations("IdentityReference");
 
         // Configure keyless entity types for raw SQL query results
         modelBuilder.Entity<TierKeyResult>().HasNoKey();

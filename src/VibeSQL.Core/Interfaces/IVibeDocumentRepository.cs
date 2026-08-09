@@ -20,8 +20,13 @@ public interface IVibeDocumentRepository
         int clientId, string collection, string tableName, int page, int pageSize);
 
     /// <summary>
-    /// Create a document and return it with generated keys
+    /// Create a document and return it with generated keys.
     /// </summary>
+    /// <exception cref="VibeSQL.Core.Exceptions.UnknownClientReferenceException">
+    /// <paramref name="clientId"/> does not reference an existing client (Mode B cross-schema
+    /// reference constraint, docs/cross-schema-reference-constraints.md). Not thrown for the
+    /// legacy client_id=0 sentinel -- see VibeDocumentRepository.LegacyGlobalSentinelClientId.
+    /// </exception>
     Task<(VibeDocument Document, Dictionary<string, object>? GeneratedKeys)> CreateAsync(
         int clientId, int userId, string collection, string tableName, string data, int? createdBy);
 
