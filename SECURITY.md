@@ -1,6 +1,10 @@
 # Security
 
-## Advisory: tenant isolation policies in `scripts/base-schema.v2.sql` permitted a cross-tenant write (fixed)
+## Advisory: tenant isolation policies in `scripts/base-schema.v2.sql` allowed any tenant to write a
+row that EVERY tenant could read (fixed)
+
+*Not a write into another named tenant's rows — that was always refused. The open path was the
+shared `client_id = 0` bucket. If you tested the first case and saw a refusal, you did not test this.*
 
 **If you provisioned a database from `scripts/base-schema.v2.sql` before it carried
 `WITH CHECK`, your database is still affected. Updating the file does not fix a database
