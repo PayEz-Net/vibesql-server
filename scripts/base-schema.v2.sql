@@ -26,6 +26,14 @@ CREATE SCHEMA IF NOT EXISTS vibe;
 -- connects as the owner — so RLS without FORCE is isolation that silently does
 -- not apply to the one role that matters.
 --
+-- The READ rule and the WRITE rule are deliberately DIFFERENT, and the difference is
+-- load-bearing. USING lets a tenant READ shared rows (client_id = 0); WITH CHECK does
+-- NOT let it WRITE them. Omitting WITH CHECK is not a shorter way to say the same
+-- thing: Postgres reuses USING as the write check when WITH CHECK is absent, so
+-- "OR client_id = 0" silently becomes a WRITE permission. Any tenant could then insert
+-- a client_id = 0 row that EVERY other tenant reads back -- a cross-tenant channel
+-- built out of the isolation policy itself. Verified by refusal (card 188798).
+--
 -- The policy admits client_id = 0 as shared/global rows. Anything reading for
 -- a single tenant must ALSO filter explicitly; the policy is defence in depth,
 -- not a scoping mechanism.
@@ -53,7 +61,8 @@ CREATE INDEX IF NOT EXISTS idx_collection_schemas_client
 ALTER TABLE vibe.collection_schemas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.collection_schemas FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.collection_schemas
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
 
 -- ── documents: the JSONB store, LIST-partitioned by tenant ─────────────────
 -- NOTE: partitions are NOT tenant boundaries. A partition may hold one tenant
@@ -104,7 +113,8 @@ CREATE INDEX IF NOT EXISTS idx_documents_data_gin
 ALTER TABLE vibe.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.documents FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.documents
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
 
 -- ── encrypted_value_ownership: binds ciphertext to tenant and key ──────────
 -- Restore documents without this and the ciphertext may be unclaimable.
@@ -123,7 +133,8 @@ CREATE INDEX IF NOT EXISTS ix_encrypted_value_ownership_hash
 ALTER TABLE vibe.encrypted_value_ownership ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.encrypted_value_ownership FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.encrypted_value_ownership
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
 
 -- ── virtual_indexes: declared indexes over JSONB paths ─────────────────────
 CREATE TABLE IF NOT EXISTS vibe.virtual_indexes (
@@ -148,7 +159,8 @@ CREATE INDEX IF NOT EXISTS idx_virtual_indexes_partition
 ALTER TABLE vibe.virtual_indexes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.virtual_indexes FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.virtual_indexes
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
 
 -- ── tier_configurations / tier_features ────────────────────────────────────
 -- tier_features has NO client_id but is NOT global: it is a child of
@@ -179,7 +191,8 @@ CREATE INDEX IF NOT EXISTS idx_tier_configurations_client_tier_key
 ALTER TABLE vibe.tier_configurations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.tier_configurations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.tier_configurations
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
 
 CREATE TABLE IF NOT EXISTS vibe.tier_features (
     tier_feature_id       INTEGER      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -244,7 +257,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at      ON vibe.audit_logs (cr
 ALTER TABLE vibe.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.audit_logs FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.audit_logs
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
 
 -- ── feature_usage_logs ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS vibe.feature_usage_logs (
@@ -276,4 +290,5 @@ CREATE INDEX IF NOT EXISTS idx_feature_usage_logs_exceeded
 ALTER TABLE vibe.feature_usage_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vibe.feature_usage_logs FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON vibe.feature_usage_logs
-    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0);
+    USING (client_id = current_setting('app.client_id', true)::integer OR client_id = 0)
+    WITH CHECK (client_id = current_setting('app.client_id', true)::integer);
