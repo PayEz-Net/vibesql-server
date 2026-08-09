@@ -8,7 +8,7 @@ already created from it — the policies must be altered in place. Steps below.*
 
 ### Affected
 
-`scripts/base-schema.v2.sql` as it existed on branch `fix/wire-audit-log-repository`
+`scripts/base-schema.v2.sql` (present only on feature branches, not on `master`) as it existed on branch `fix/wire-audit-log-repository`
 before commit `4a06e03`. The file was never present on `master` or `main`, so it is
 reachable only if you took it from that branch, or from an image built from it.
 
@@ -46,7 +46,10 @@ verified isolation that way, your verification could not have detected this.**
 Run, as a **non-superuser** role with `rolbypassrls = false`:
 
 ```
-psql "postgres://<non-superuser>@<host>:<port>/<db>" -f scripts/rls-acceptance-probe.sql
+# The probe is not on master. Retrieve it first:
+#   git fetch origin fix/wire-audit-log-repository
+#   git show origin/fix/wire-audit-log-repository:scripts/rls-acceptance-probe.sql > rls-acceptance-probe.sql
+psql "postgres://<non-superuser>@<host>:<port>/<db>" -f rls-acceptance-probe.sql
 ```
 
 The probe aborts if given a superuser connection, because a superuser bypasses RLS and
