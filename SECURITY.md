@@ -46,10 +46,7 @@ verified isolation that way, your verification could not have detected this.**
 Run, as a **non-superuser** role with `rolbypassrls = false`:
 
 ```
-# The probe is not on master. Retrieve it first:
-#   git fetch origin fix/wire-audit-log-repository
-#   git show origin/fix/wire-audit-log-repository:scripts/rls-acceptance-probe.sql > rls-acceptance-probe.sql
-psql "postgres://<non-superuser>@<host>:<port>/<db>" -f rls-acceptance-probe.sql
+psql "postgres://<non-superuser>@<host>:<port>/<db>" -f scripts/rls-acceptance-probe.sql
 ```
 
 The probe aborts if given a superuser connection, because a superuser bypasses RLS and
