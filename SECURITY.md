@@ -1,6 +1,6 @@
 # Security
 
-## Advisory: tenant isolation policies in `scripts/base-schema.v2.sql` permitted a cross-tenant write (fixed)
+## Advisory: tenant isolation policies in `scripts/base-schema.v2.sql` let any tenant write a row every tenant could read (fixed)
 
 **If you provisioned a database from `scripts/base-schema.v2.sql` before it carried
 `WITH CHECK`, your database is still affected. Updating the file does not fix a database
