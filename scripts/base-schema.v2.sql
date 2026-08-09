@@ -1,4 +1,19 @@
 -- ═══════════════════════════════════════════════════════════════════════════
+-- SECURITY ADVISORY — READ IF YOU PROVISIONED FROM AN EARLIER COPY OF THIS FILE
+--
+-- Before commit 4a06e03 the seven `tenant_isolation` policies below declared USING
+-- and no WITH CHECK. PostgreSQL applies USING to writes when WITH CHECK is absent,
+-- so `OR client_id = 0` became a WRITE permission: any tenant could insert a
+-- client_id = 0 row, which every other tenant could then read.
+--
+-- UPDATING THIS FILE DOES NOT FIX A DATABASE ALREADY CREATED FROM IT. The policies
+-- must be altered in place. `rowsecurity = true` is true of the broken policy too,
+-- so a flag check cannot tell you whether you are affected — only an attempted
+-- write can. See SECURITY.md for detection and the ALTER POLICY remediation, and
+-- run scripts/rls-acceptance-probe.sql (as a NON-SUPERUSER) to verify.
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══════════════════════════════════════════════════════════════════════════
 -- VibeSQL — canonical base schema (v2, PROPOSED)
 --
 -- Replaces scripts/base-schema.sql, which is incomplete and inaccurate:
