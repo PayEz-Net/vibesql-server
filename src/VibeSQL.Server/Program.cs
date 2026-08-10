@@ -1,8 +1,11 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Events;
 using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
+using VibeSQL.Core;
+using VibeSQL.Core.Data;
 using VibeSQL.Core.Models;
 using VibeSQL.Core.Query;
 using VibeSQL.Server.Middleware;
@@ -63,6 +66,16 @@ builder.Services.AddSingleton<IQuerySafetyChecker, QuerySafetyChecker>();
 builder.Services.AddSingleton<IQueryLimiter, QueryLimiter>();
 builder.Services.AddScoped<IQueryExecutor, QueryExecutor>();
 builder.Services.AddScoped<IClientIdResolver, ClientIdResolver>();
+
+// EF Core - vibe database (Devart dotConnect for PostgreSQL). Required by the
+// Core repositories registered below.
+builder.Services.AddDbContext<VibeDbContext>(options =>
+    options.UsePostgreSql(builder.Configuration.GetConnectionString("VibeDb")));
+
+// VibeSQL Core application services (card 186214): the six previously-unwired
+// repositories + index management service. Registration alone made them
+// RESOLVABLE; this host call is what makes them reachable at runtime.
+builder.Services.AddVibeApplicationServices();
 
 // Controllers + Swagger
 builder.Services.AddControllers();
