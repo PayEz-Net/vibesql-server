@@ -20,8 +20,9 @@ namespace VibeSQL.Server.Middleware;
 ///
 /// Public paths (health, swagger) bypass authentication. Resolved-client-id is
 /// passed through to the request pipeline; when it resolves, the client tier is
-/// stamped from the DATABASE (card 209102) - the X-Vibe-Client-Tier header is a
-/// fallback, not an authority.
+/// READ from the database on every request (card 209102) and stamped over the
+/// X-Vibe-Client-Tier header only when VibeSQL:TierResolution:DbAuthoritative
+/// is true - the stamp is the Jon-gated behavior flip, gated by construction.
 /// </summary>
 public class ContainerSecretAuthMiddleware
 {
@@ -48,7 +49,7 @@ public class ContainerSecretAuthMiddleware
         _expectedSecret = secretConfig.Secret;
     }
 
-    public async Task InvokeAsync(HttpContext context, JwksCache jwksCache, IVibeUsageRepository usageRepository)
+    public async Task InvokeAsync(HttpContext context, JwksCache jwksCache, IVibeUsageRepository usageRepository, IConfiguration configuration)
     {
         var path = context.Request.Path.Value ?? "";
 
@@ -87,7 +88,7 @@ public class ContainerSecretAuthMiddleware
                         _logger.LogDebug("VSQL_AUTH_JWT_OK: No user_id claim. Path={Path}", path);
                     }
 
-                    await PassTierHeadersAsync(context, usageRepository);
+                    await PassTierHeadersAsync(context, usageRepository, configuration);
                     await _next(context);
                 }
                 else
@@ -112,7 +113,7 @@ public class ContainerSecretAuthMiddleware
                 return;
             }
 
-            await PassTierHeadersAsync(context, usageRepository);
+            await PassTierHeadersAsync(context, usageRepository, configuration);
             _logger.LogDebug("VSQL_AUTH_SECRET_OK: Path: {Path}", path);
             await _next(context);
             return;
@@ -190,7 +191,7 @@ public class ContainerSecretAuthMiddleware
         }
     }
 
-    private async Task PassTierHeadersAsync(HttpContext context, IVibeUsageRepository usageRepository)
+    private async Task PassTierHeadersAsync(HttpContext context, IVibeUsageRepository usageRepository, IConfiguration configuration)
     {
         var clientTier = context.Request.Headers["X-Vibe-Client-Tier"].FirstOrDefault();
         if (!string.IsNullOrEmpty(clientTier))
@@ -204,24 +205,38 @@ public class ContainerSecretAuthMiddleware
         {
             context.Items["ClientId"] = clientId;
 
-            // Card 209102 / 186214 lane 1: once ClientId resolves, the tier comes
-            // from the DATABASE, not the caller-asserted X-Vibe-Client-Tier header
-            // (measured: Edge never sets it - ProxyRequestBuilder.cs:30 only reads
-            // Items - so in practice the header is absent and any direct caller
-            // could assert any tier). Behavior note: GetClientTierAsync returns
-            // the DEFAULT tier for every client until 195316/195919 land, so this
-            // makes tier_configurations READS live without per-client divergence;
-            // the behavior flip is Jon-gated and OUT of scope. A null tier row
-            // (no default configured) leaves the header value standing, exactly
-            // as today.
+            // Card 209102 / 186214 lane 1: once ClientId resolves, READ the tier
+            // from the database - tier_configurations reads are live on the
+            // request path, which is this lane's purpose. (Measured: Edge never
+            // sets the header - ProxyRequestBuilder.cs:30 only reads Items - so
+            // in practice it is absent and any direct caller could assert any
+            // tier.)
+            //
+            // THE STAMP IS GATED (QAPert reject 26967, done-leg b): today's
+            // effective behavior is Items["ClientTier"] UNSET -> GetTimeout(null)
+            // -> DefaultSeconds = 5s. Stamping the default row's TierKey would
+            // flip the timeout to whatever the live row says (2/10/30s if it is
+            // not 'starter') - a behavior flip the card reserves for Jon. So the
+            // read ALWAYS happens (reads live, logged) but Items["ClientTier"] is
+            // stamped from the DB ONLY when VibeSQL:TierResolution:DbAuthoritative
+            // is true - inert by construction, not by unmeasured luck. Enabling
+            // the flag IS the Jon-gated flip, and it ships after 195316/195919
+            // make the per-client lookup real.
             try
             {
                 var tierConfig = await usageRepository.GetClientTierAsync(clientId);
-                if (tierConfig != null)
+                var dbAuthoritative = configuration.GetValue("VibeSQL:TierResolution:DbAuthoritative", false);
+                if (tierConfig != null && dbAuthoritative)
                 {
                     context.Items["ClientTier"] = tierConfig.TierKey;
                     _logger.LogDebug("VSQL_TIER_DB: ClientId={ClientId}, Tier={Tier} (DB-authoritative)",
                         clientId, tierConfig.TierKey);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "VSQL_TIER_DB_READ: ClientId={ClientId}, DbTier={Tier} read but NOT stamped (DbAuthoritative={Flag})",
+                        clientId, tierConfig?.TierKey ?? "(null)", dbAuthoritative);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
