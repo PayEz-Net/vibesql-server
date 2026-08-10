@@ -4,6 +4,7 @@ using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.IdentityModel.Tokens;
+using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Models;
 
 namespace VibeSQL.Server.Middleware;
@@ -17,8 +18,10 @@ namespace VibeSQL.Server.Middleware;
 ///
 /// JWT validation is zero network round-trip (JWKS cached at startup, 24h TTL).
 ///
-/// Public paths (health, swagger) bypass authentication. Optional tier and
-/// resolved-client-id headers are passed through to the request pipeline.
+/// Public paths (health, swagger) bypass authentication. Resolved-client-id is
+/// passed through to the request pipeline; when it resolves, the client tier is
+/// stamped from the DATABASE (card 209102) - the X-Vibe-Client-Tier header is a
+/// fallback, not an authority.
 /// </summary>
 public class ContainerSecretAuthMiddleware
 {
@@ -45,7 +48,7 @@ public class ContainerSecretAuthMiddleware
         _expectedSecret = secretConfig.Secret;
     }
 
-    public async Task InvokeAsync(HttpContext context, JwksCache jwksCache)
+    public async Task InvokeAsync(HttpContext context, JwksCache jwksCache, IVibeUsageRepository usageRepository)
     {
         var path = context.Request.Path.Value ?? "";
 
@@ -84,7 +87,7 @@ public class ContainerSecretAuthMiddleware
                         _logger.LogDebug("VSQL_AUTH_JWT_OK: No user_id claim. Path={Path}", path);
                     }
 
-                    PassTierHeaders(context);
+                    await PassTierHeadersAsync(context, usageRepository);
                     await _next(context);
                 }
                 else
@@ -109,7 +112,7 @@ public class ContainerSecretAuthMiddleware
                 return;
             }
 
-            PassTierHeaders(context);
+            await PassTierHeadersAsync(context, usageRepository);
             _logger.LogDebug("VSQL_AUTH_SECRET_OK: Path: {Path}", path);
             await _next(context);
             return;
@@ -187,7 +190,7 @@ public class ContainerSecretAuthMiddleware
         }
     }
 
-    private static void PassTierHeaders(HttpContext context)
+    private async Task PassTierHeadersAsync(HttpContext context, IVibeUsageRepository usageRepository)
     {
         var clientTier = context.Request.Headers["X-Vibe-Client-Tier"].FirstOrDefault();
         if (!string.IsNullOrEmpty(clientTier))
@@ -200,6 +203,34 @@ public class ContainerSecretAuthMiddleware
             int.TryParse(resolvedClientId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var clientId))
         {
             context.Items["ClientId"] = clientId;
+
+            // Card 209102 / 186214 lane 1: once ClientId resolves, the tier comes
+            // from the DATABASE, not the caller-asserted X-Vibe-Client-Tier header
+            // (measured: Edge never sets it - ProxyRequestBuilder.cs:30 only reads
+            // Items - so in practice the header is absent and any direct caller
+            // could assert any tier). Behavior note: GetClientTierAsync returns
+            // the DEFAULT tier for every client until 195316/195919 land, so this
+            // makes tier_configurations READS live without per-client divergence;
+            // the behavior flip is Jon-gated and OUT of scope. A null tier row
+            // (no default configured) leaves the header value standing, exactly
+            // as today.
+            try
+            {
+                var tierConfig = await usageRepository.GetClientTierAsync(clientId);
+                if (tierConfig != null)
+                {
+                    context.Items["ClientTier"] = tierConfig.TierKey;
+                    _logger.LogDebug("VSQL_TIER_DB: ClientId={ClientId}, Tier={Tier} (DB-authoritative)",
+                        clientId, tierConfig.TierKey);
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Tier resolution must never break an authenticated request -
+                // the header value (or absence) stands, exactly as before this lane.
+                _logger.LogWarning(ex,
+                    "VSQL_TIER_DB_FAILED: tier lookup failed for ClientId={ClientId}; header value stands", clientId);
+            }
         }
     }
 
