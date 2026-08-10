@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
+using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Query;
 
 namespace VibeSQL.Server.Controllers.V1;
@@ -11,14 +13,17 @@ public class SchemasController : ControllerBase
 {
     private readonly string _connectionString;
     private readonly ILogger<SchemasController> _logger;
+    private readonly IVibeIndexManagementService _indexManagement;
 
     public SchemasController(
         IConfiguration configuration,
-        ILogger<SchemasController> logger)
+        ILogger<SchemasController> logger,
+        IVibeIndexManagementService indexManagement)
     {
         _connectionString = configuration.GetConnectionString("VibeDb")
             ?? throw new InvalidOperationException("VibeDb connection string not configured");
         _logger = logger;
+        _indexManagement = indexManagement;
     }
 
     /// <summary>
@@ -151,6 +156,34 @@ public class SchemasController : ControllerBase
 
             var rows = await ReadRowsAsync(insertCmd, cancellationToken);
             await tx.CommitAsync(cancellationToken);
+
+            // Virtual-index sync (card 209106 / 186214 lane 3): the service
+            // interface's own doc names schema create/update as its trigger.
+            // Runs POST-COMMIT by design - the version row is already durable,
+            // so a sync failure CANNOT fail the schema write. Failure mode,
+            // stated explicitly: a failed or partial sync leaves virtual_indexes
+            // stale relative to the new schema version; it is logged loud and is
+            // recoverable by re-PUTting the schema (sync is idempotent - existing
+            // indexes are skipped, orphans dropped).
+            try
+            {
+                using var schemaDoc = JsonDocument.Parse(request.JsonSchema);
+                var syncResults = await _indexManagement.SyncIndexesForSchemaAsync(
+                    request.ClientId, collection, schemaDoc);
+                var failed = syncResults.Count(r => !r.Success);
+                if (failed > 0)
+                {
+                    _logger.LogWarning(
+                        "VIBESQL_SCHEMAS: index sync incomplete for collection '{Collection}' (client_id={ClientId}): {Failed}/{Total} index operations failed - schema v{Version} stands; re-PUT to retry",
+                        collection, request.ClientId, failed, syncResults.Count, newVersion);
+                }
+            }
+            catch (Exception syncEx) when (syncEx is not OperationCanceledException)
+            {
+                _logger.LogError(syncEx,
+                    "VIBESQL_SCHEMAS: index sync failed post-commit for collection '{Collection}' (client_id={ClientId}) - schema v{Version} stands; re-PUT to retry sync",
+                    collection, request.ClientId, newVersion);
+            }
 
             _logger.LogInformation(
                 "VIBESQL_SCHEMAS: Created schema v{Version} for collection '{Collection}' (client_id={ClientId})",
