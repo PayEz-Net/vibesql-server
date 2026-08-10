@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Models;
 using VibeSQL.Core.Query;
 
@@ -14,13 +15,16 @@ namespace VibeSQL.Server.Controllers.V1;
 public class QueryController : ControllerBase
 {
     private readonly IQueryExecutor _executor;
+    private readonly IVibeUsageRepository _usageRepository;
     private readonly ILogger<QueryController> _logger;
 
     public QueryController(
         IQueryExecutor executor,
+        IVibeUsageRepository usageRepository,
         ILogger<QueryController> logger)
     {
         _executor = executor;
+        _usageRepository = usageRepository;
         _logger = logger;
     }
 
@@ -51,6 +55,27 @@ public class QueryController : ControllerBase
             _logger.LogDebug("VIBE_QUERY_ENDPOINT: Received query request");
 
             var result = await _executor.ExecuteAsync(request.Sql, tier, clientId, HttpContext.RequestAborted);
+
+            // Usage metering (card 209104 / 186214 lane 2): write the
+            // feature_usage_logs row at the controller layer, per-endpoint feature
+            // key, AFTER successful execution. HARD RULE: metering never breaks
+            // the request - a metering failure is logged, never rethrown, and a
+            // successful query still returns 200. Enforcement (CheckUsageAsync
+            // gating) is deliberately OUT of this lane - this WRITES rows only.
+            // Unmetered when ClientId is unresolved (no row can be attributed).
+            if (clientId.HasValue)
+            {
+                try
+                {
+                    await _usageRepository.IncrementUsageAsync(clientId.Value, null, "queries");
+                }
+                catch (Exception meterEx) when (meterEx is not OperationCanceledException)
+                {
+                    _logger.LogWarning(meterEx,
+                        "VIBE_USAGE_METER_FAILED: usage write failed for client {ClientId}; query result unaffected",
+                        clientId.Value);
+                }
+            }
 
             return Ok(new QueryResponse
             {
