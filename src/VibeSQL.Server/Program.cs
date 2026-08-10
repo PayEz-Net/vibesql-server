@@ -1,8 +1,11 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using Serilog;
 using Serilog.Events;
 using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
+using VibeSQL.Core;
+using VibeSQL.Core.Data;
 using VibeSQL.Core.Models;
 using VibeSQL.Core.Query;
 using VibeSQL.Server.Middleware;
@@ -58,6 +61,16 @@ builder.Services.AddSingleton<IQueryValidator, QueryValidator>();
 builder.Services.AddSingleton<IQuerySafetyChecker, QuerySafetyChecker>();
 builder.Services.AddSingleton<IQueryLimiter, QueryLimiter>();
 builder.Services.AddScoped<IQueryExecutor, QueryExecutor>();
+
+// EF Core - vibe database (Devart dotConnect for PostgreSQL). Required by the
+// Core repositories and the client-reference validator registered below.
+builder.Services.AddDbContext<VibeDbContext>(options =>
+    options.UsePostgreSql(builder.Configuration.GetConnectionString("VibeDb")));
+
+// VibeSQL Core application services: repositories, client-reference validator,
+// schema migration, sequences (card 186212 - this call is what wires the
+// Mode B reference-constraint guard into the running host).
+builder.Services.AddVibeApplicationServices();
 
 // Controllers + Swagger
 builder.Services.AddControllers();

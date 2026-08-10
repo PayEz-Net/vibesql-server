@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using VibeSQL.Core.Data.Repositories;
 using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Services;
 
@@ -24,6 +25,11 @@ public static class ServiceCollectionExtensions
         // Mode B cross-schema reference-constraint validator (docs/cross-schema-reference-constraints.md,
         // card 186212 / Sentinel M-201). Required by VibeDocumentRepository.
         services.AddScoped<IClientReferenceValidator, ClientReferenceValidator>();
+
+        // Document repository - the guarded write path for vibe.documents (card 186212 /
+        // M-201). CreateAsync refuses a write naming a non-existent client_id; registering
+        // it here is what makes that guard reachable from any host consumer.
+        services.AddScoped<IVibeDocumentRepository, VibeDocumentRepository>();
 
         return services;
     }

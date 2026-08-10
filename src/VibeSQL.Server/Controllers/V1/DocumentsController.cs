@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Devart.Data.PostgreSql;
+using VibeSQL.Core.Interfaces;
 using VibeSQL.Core.Query;
 
 namespace VibeSQL.Server.Controllers.V1;
@@ -11,14 +12,17 @@ public class DocumentsController : ControllerBase
 {
     private readonly string _connectionString;
     private readonly ILogger<DocumentsController> _logger;
+    private readonly IClientReferenceValidator _clientReferenceValidator;
 
     public DocumentsController(
         IConfiguration configuration,
-        ILogger<DocumentsController> logger)
+        ILogger<DocumentsController> logger,
+        IClientReferenceValidator clientReferenceValidator)
     {
         _connectionString = configuration.GetConnectionString("VibeDb")
             ?? throw new InvalidOperationException("VibeDb connection string not configured");
         _logger = logger;
+        _clientReferenceValidator = clientReferenceValidator;
     }
 
     /// <summary>
@@ -44,6 +48,20 @@ public class DocumentsController : ControllerBase
 
         try
         {
+            // Mode B cross-schema reference constraint (docs/cross-schema-reference-constraints.md,
+            // card 186212 / Sentinel M-201): this raw INSERT bypasses
+            // VibeDocumentRepository.CreateAsync, so the same guard runs here on the live
+            // HTTP write path. ClientId <= 0 is rejected above, so the repository's
+            // temporary sentinel-0 exemption never applies on this path.
+            if (!await _clientReferenceValidator.ClientExistsAsync(request.ClientId))
+            {
+                _logger.LogWarning(
+                    "VIBE_DOC_UNKNOWN_CLIENT: Refused document write for non-existent client. ClientId: {ClientId}, Collection: {Collection}, Table: {TableName}",
+                    request.ClientId, collection, table);
+                return BadRequest(ErrorResponse("UNKNOWN_CLIENT_REFERENCE",
+                    $"client_id {request.ClientId} does not reference an existing client"));
+            }
+
             await using var connection = new PgSqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
