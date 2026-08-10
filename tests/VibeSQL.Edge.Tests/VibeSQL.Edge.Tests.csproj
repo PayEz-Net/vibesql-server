@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -23,6 +23,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\VibeSQL.Edge\VibeSQL.Edge.csproj" />
+    <!-- Card 186214: test-visibility reference so the Core DI-resolution tests can
+         see VibeSQL.Core. No production project gains a dependency from this. -->
+    <ProjectReference Include="..\..\src\VibeSQL.Core\VibeSQL.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
