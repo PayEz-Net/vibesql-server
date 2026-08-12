@@ -17,6 +17,7 @@
   <ItemGroup>
     <!-- Azure App Configuration (optional - for cloud deployments) -->
     <PackageReference Include="Microsoft.Extensions.Configuration.AzureAppConfiguration" Version="8.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 
     <!-- Logging -->
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
