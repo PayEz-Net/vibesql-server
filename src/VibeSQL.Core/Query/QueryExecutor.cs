@@ -36,12 +36,18 @@ public class QueryExecutor : IQueryExecutor
         string sql,
         string? tier = null,
         int? clientId = null,
+        QueryAuditContext? auditContext = null,
         CancellationToken cancellationToken = default)
     {
         var stopwatch = Stopwatch.StartNew();
 
         _validator.Validate(sql);
         _safetyChecker.CheckSafety(sql);
+
+        // 189589: classify BEFORE execution. Null = not a cleanly-identified
+        // vibe.documents write = no audit row (never a fabricated one). Reads
+        // classify null by construction.
+        var auditAction = DocumentWriteAudit.ClassifyDocumentWrite(sql);
 
         _logger.LogInformation("VIBE_QUERY: Executing query: {Query}", TruncateForLog(sql, 100));
 
@@ -90,6 +96,17 @@ public class QueryExecutor : IQueryExecutor
             {
                 await using var cmd = new NpgsqlCommand(sql, connection, tx);
                 var affectedRows = await cmd.ExecuteNonQueryAsync(timeoutCts.Token);
+
+                // 189589: audit INSIDE the transaction - the audit row and the
+                // document write commit or roll back together. Fail-closed on
+                // missing system user (see DocumentWriteAudit).
+                if (auditAction != null)
+                {
+                    await DocumentWriteAudit.WriteAsync(
+                        connection, tx, clientId.Value, auditAction,
+                        affectedRows, sql, auditContext, timeoutCts.Token);
+                }
+
                 await tx.CommitAsync(timeoutCts.Token);
 
                 stopwatch.Stop();
@@ -108,6 +125,16 @@ public class QueryExecutor : IQueryExecutor
             else
             {
                 var rows = await ExecuteQueryAsync(connection, tx, sql, timeoutCts.Token);
+
+                // 189589: DML with RETURNING lands here - audit it too (row count =
+                // returned rows). Plain SELECTs classify null and never reach this.
+                if (auditAction != null)
+                {
+                    await DocumentWriteAudit.WriteAsync(
+                        connection, tx, clientId.Value, auditAction,
+                        rows.Count, sql, auditContext, timeoutCts.Token);
+                }
+
                 await tx.CommitAsync(timeoutCts.Token);
 
                 stopwatch.Stop();

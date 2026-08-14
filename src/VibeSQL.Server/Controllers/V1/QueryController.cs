@@ -50,7 +50,13 @@ public class QueryController : ControllerBase
         {
             _logger.LogDebug("VIBE_QUERY_ENDPOINT: Received query request");
 
-            var result = await _executor.ExecuteAsync(request.Sql, tier, clientId, HttpContext.RequestAborted);
+            var result = await _executor.ExecuteAsync(request.Sql, tier, clientId,
+                new QueryAuditContext(
+                    HttpContext.Request.Path.ToString(),
+                    HttpContext.Request.Method,
+                    HttpContext.Connection.RemoteIpAddress?.ToString(),
+                    HttpContext.Request.Headers.UserAgent.ToString()),
+                HttpContext.RequestAborted);
 
             return Ok(new QueryResponse
             {

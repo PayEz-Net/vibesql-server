@@ -11,10 +11,13 @@ public interface IQueryExecutor
     /// connection (VibeDbRls / vibe_rls_user) inside a transaction with
     /// <c>SET LOCAL app.client_id = {clientId}</c> so Postgres row-level security scopes
     /// tenant tables to that client.
+    /// Writes to vibe.documents are audited in the same transaction (189589);
+    /// <paramref name="auditContext"/> carries request attribution for that row.
     /// </summary>
     Task<QueryExecutionResult> ExecuteAsync(
         string sql,
         string? tier = null,
         int? clientId = null,
+        QueryAuditContext? auditContext = null,
         CancellationToken cancellationToken = default);
 }
