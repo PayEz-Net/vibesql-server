@@ -28,6 +28,25 @@
 -- present on every affected table. ONLY REFUSAL DISCRIMINATES. This probe therefore
 -- asserts observed behaviour and never reads a catalog flag as evidence of safety.
 --
+-- THIS PROBE IS LOAD-BEARING — WHAT IT GUARDS (declared, not incidental; 188798 Rule 6)
+-- It guards the ACCEPTED RESIDUAL HISTORY. The write-open pre-4a06e03 shape of
+-- `scripts/base-schema.v2.sql` is still reachable in public history on two branches --
+-- `fix/wire-audit-log-repository` and `scout/188798-rls-with-check` -- and that was
+-- ACCEPTED rather than rewritten (lead ruling, card 188798, 2026-08-15): the blob is a
+-- hazardous shape, not a secret, and rewriting shared public branches costs more than the
+-- residual risk. That acceptance is only safe BECAUSE this probe exists. Harm needs two
+-- steps: check out a pre-4a06e03 commit AND apply that schema to a database. This probe is
+-- what stands between step two and a live cross-tenant broadcast channel.
+--
+-- ARMING CHANGE (what makes the accepted risk go live): applying schema from a
+-- pre-4a06e03 checkout WITHOUT running this probe afterwards.
+--
+-- ENFORCEMENT STATUS: HUMAN-INVOKED, NOT CI-ENFORCED. No pipeline runs this. It holds only
+-- if a person runs it, which is why SECURITY.md makes it a MANDATORY step of schema apply.
+-- If you are ever tempted to delete this file or drop that step, understand that you are
+-- not removing a test -- you are retroactively converting an accepted risk into an
+-- unmitigated one, and the 188798 ruling stops being true the moment you do.
+--
 -- HOW TO RUN (the role matters more than the SQL)
 --   psql "postgres://vibe_rls_user:...@host:port/db" -f scripts/rls-acceptance-probe.sql
 --
