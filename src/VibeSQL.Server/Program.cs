@@ -15,21 +15,58 @@ var builder = WebApplication.CreateBuilder(args);
 var graylogHost = builder.Configuration["Logging:Graylog:HostnameOrAddress"];
 var graylogPort = builder.Configuration["Logging:Graylog:Port"];
 
-Log.Logger = new LoggerConfiguration()
+// Card 394479. *** DO NOT RESTORE `graylogHost ?? "localhost"`. *** That fallback was STRICTLY
+// WEAKER than no check at all. `??` only catches NULL, so an EMPTY host went to the sink
+// verbatim, and a NULL host aimed a UDP sink at localhost:12201 - a port on this box with
+// nothing listening. UDP has no delivery failure to observe, so a misconfigured sink and a
+// healthy one look EXACTLY THE SAME from here while every log line is silently discarded.
+//
+// The scenario this card was filed about is a DROPPED OR MISTYPED ENV VAR KEY. The AKS
+// deployment sets Logging__Graylog__HostnameOrAddress literally; if that key is lost, config
+// falls through to appsettings.json. So the base appsettings.json host is now "" - an
+// explicitly empty host means "no sink, deliberately", which takes the branch below, prints a
+// WARNING, and registers nothing. A dropped env var is now LOUD instead of silent.
+//
+// appsettings.Development.json carried "localhost" too and is EMPTIED for the same reason. It
+// OUTRANKS this base file, so fixing only the base file would have been defeated by it on any
+// box running as Development - which is every container on the ROSA/93 dev rig.
+//
+// A validator (is this a usable IP/DNS name?) is deliberately NOT duplicated here. That rule
+// lives in PayEz.Application.Logging.GraylogHostValidator in the PayEz-Core repository, and
+// this is a separate repository with no reference to it - a rule COPIED is two rules that
+// disagree by next month. The fail-open default is the defect this card names; refusing
+// malformed hosts is a separate improvement and belongs with the shared validator, not a fork.
+var loggerConfiguration = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .Enrich.WithEnvironmentName()
     .Enrich.WithThreadId()
-    .WriteTo.Console()
-    .WriteTo.Graylog(new GraylogSinkOptions
+    .WriteTo.Console();
+
+if (string.IsNullOrWhiteSpace(graylogHost))
+{
+    Console.WriteLine(
+        "WARNING: Logging:Graylog:HostnameOrAddress is not set. The Graylog sink will NOT be " +
+        "registered and VibeSQL.Server will log to the console only. This is deliberate: the " +
+        "previous behaviour silently defaulted to localhost:12201 and discarded every log line. " +
+        "If you expected central logging, the setting that WINS is the " +
+        "Logging__Graylog__HostnameOrAddress environment variable (highest precedence last: " +
+        "appsettings.json < appsettings.{Environment}.json < environment variable), which is " +
+        "what the AKS deployment sets - editing appsettings.json there is INERT.");
+}
+else
+{
+    loggerConfiguration.WriteTo.Graylog(new GraylogSinkOptions
     {
-        HostnameOrAddress = graylogHost ?? "localhost",
+        HostnameOrAddress = graylogHost,
         Port = int.TryParse(graylogPort, out var port) ? port : 12201,
         TransportType = TransportType.Udp,
         Facility = "VibeSQL.Server"
-    })
-    .CreateLogger();
+    });
+}
+
+Log.Logger = loggerConfiguration.CreateLogger();
 
 builder.Host.UseSerilog();
 
