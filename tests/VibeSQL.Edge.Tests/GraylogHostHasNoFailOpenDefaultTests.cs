@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 
 namespace VibeSQL.Edge.Tests;
@@ -79,9 +80,24 @@ public class GraylogHostHasNoFailOpenDefaultTests
     /// The stripping is line-comment only and deliberately crude. It would mis-handle a `//`
     /// inside a string literal; no such line exists in either file, and the control below pins
     /// that stripping has NOT blinded the detector to real code.
+    ///
+    /// *** WHITESPACE-TOLERANT BECAUSE THE LITERAL VERSION WAS EVADED BY DELETING TWO SPACES. ***
+    /// This was a substring match on `graylogHost ?? "`. @DotNetPert-Scout mutation-tested it
+    /// against the real tree and MEASURED the miss: restoring the defect as
+    /// `graylogHost??"localhost"` - valid C#, byte-for-byte the same behaviour - passed 11/11
+    /// while the live defect sat in the tree. A guard against QUIET RESTORATION that is defeated
+    /// by reformatting is not a guard; an unasked-for run of a formatter would have done it.
+    ///
+    /// *** HONEST BOUND, DO NOT READ THIS AS "EVERY EQUIVALENT IS CAUGHT". *** It catches the
+    /// LITERAL restoration at any spacing. It does NOT catch a semantically identical rewrite
+    /// that avoids the literal - `graylogHost ?? LocalhostConst` (no quote), a ternary, or
+    /// `string.IsNullOrEmpty(graylogHost) ? "localhost" : graylogHost`. Deliberately not chased:
+    /// each regex added here buys one shape and costs the next reader clarity about what is
+    /// actually pinned. The runtime remedy is the guard in Program.cs; THIS is a tripwire on the
+    /// specific way the defect was written the first time.
     /// </summary>
     internal static bool ContainsFailOpenCoalesce(string source)
-        => StripLineComments(source).Contains("graylogHost ?? \"", StringComparison.Ordinal);
+        => Regex.IsMatch(StripLineComments(source), "graylogHost\\s*\\?\\?\\s*\"");
 
     internal static string StripLineComments(string source)
     {
@@ -134,6 +150,16 @@ public class GraylogHostHasNoFailOpenDefaultTests
                 "otherwise the Program.cs assertions below prove nothing");
 
     [Fact]
+    public void Control_SourceDetector_FlagsTheCoalesceWithNoSurroundingWhitespace()
+        => ContainsFailOpenCoalesce("HostnameOrAddress = graylogHost??\"localhost\",")
+            .Should().BeTrue(
+                "*** THIS IS THE REGRESSION TEST FOR A MEASURED ESCAPE, NOT A HYPOTHETICAL. *** " +
+                "The detector was a substring match on `graylogHost ?? \\\"`. @DotNetPert-Scout put " +
+                "this exact line back into the real tree and the suite passed 11/11 - the defect " +
+                "restored, the guard green. Two deleted spaces. If this control ever fails, " +
+                "someone has narrowed the matcher back to a literal and the tripwire is off");
+
+    [Fact]
     public void Control_SourceDetector_DoesNotFlagTheRemedy()
         => ContainsFailOpenCoalesce("HostnameOrAddress = graylogHost,")
             .Should().BeFalse(
@@ -179,6 +205,20 @@ public class GraylogHostHasNoFailOpenDefaultTests
     [Fact]
     public void EdgeBaseAppsettings_HasNoFailOpenHost()
         => AssertNoFailOpenHost("src/VibeSQL.Edge/appsettings.json");
+
+    /// <summary>
+    /// The fourth file. It had NO Graylog key at all until @DotNetPert-Scout applied this class's
+    /// own stated rule to the tree and found three of four quarters pinned.
+    ///
+    /// *** ABSENCE HERE WAS NOT SAFE-BY-DEFAULT, IT WAS THE SERVER DEFECT'S OWN SHAPE. *** A
+    /// Development.json OUTRANKS the base appsettings.json, so the empty host pinned in
+    /// src/VibeSQL.Edge/appsettings.json is silently overridable by anyone adding a Graylog
+    /// section here - which is precisely how the Server side acquired its "localhost". Pinning
+    /// present-and-empty closes the override path instead of trusting that nobody takes it.
+    /// </summary>
+    [Fact]
+    public void EdgeDevelopmentAppsettings_HasNoFailOpenHost()
+        => AssertNoFailOpenHost("src/VibeSQL.Edge/appsettings.Development.json");
 
     [Fact]
     public void ServerProgram_DoesNotRestoreTheFailOpenCoalesce()

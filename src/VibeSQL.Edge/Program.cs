@@ -87,7 +87,7 @@ builder.Services.AddSingleton<IDynamicSchemeRegistrar, DynamicSchemeRegistrar>()
 builder.Services.AddHostedService<EdgeAuthBackgroundService>();
 builder.Services.AddSingleton<IProviderRefreshTrigger>(sp => (EdgeAuthBackgroundService)sp.GetServices<IHostedService>().First(s => s is EdgeAuthBackgroundService));
 
-// Authentication � multi-provider OIDC via PolicyScheme
+// Authentication — multi-provider OIDC via PolicyScheme
 const string rejectScheme = "EdgeReject";
 builder.Services.AddAuthentication(options =>
 {
@@ -219,10 +219,10 @@ app.UseSerilogRequestLogging();
 app.UseCors();
 
 // Middleware pipeline order:
-// 1. Authentication � JWT validation via multi-provider PolicyScheme
-// 2. IdentityResolution � maps JWT claims ? federated identity ? vibe_user_id
-// 3. PermissionEnforcement � resolves role ? permission level, classifies SQL, gates access
-// 4. Routing + Authorization � ASP.NET Core endpoint routing and [Authorize] enforcement
+// 1. Authentication — JWT validation via multi-provider PolicyScheme
+// 2. IdentityResolution — maps JWT claims ? federated identity ? vibe_user_id
+// 3. PermissionEnforcement — resolves role ? permission level, classifies SQL, gates access
+// 4. Routing + Authorization — ASP.NET Core endpoint routing and [Authorize] enforcement
 app.UseAuthentication();
 app.UseMiddleware<IdentityResolutionMiddleware>();
 app.UseMiddleware<PermissionEnforcementMiddleware>();
