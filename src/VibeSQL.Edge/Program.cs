@@ -21,21 +21,44 @@ var builder = WebApplication.CreateBuilder(args);
 var graylogHost = builder.Configuration["Logging:Graylog:HostnameOrAddress"];
 var graylogPort = builder.Configuration["Logging:Graylog:Port"];
 
-Log.Logger = new LoggerConfiguration()
+// Card 394479. *** DO NOT RESTORE `graylogHost ?? "localhost"`. *** Same defect and same
+// reasoning as VibeSQL.Server/Program.cs - see the long comment there; it is not repeated here.
+//
+// *** SCOPE, AND IT IS NOT THE SAME AS THE SERVER'S: THIS PROJECT IS BUILT BY NOTHING. ***
+// docker/Dockerfile builds VibeSQL.Server only (plus VibeSQL.Core as a dependency). A sweep of
+// every Dockerfile in the vsql estate found ZERO referencing VibeSQL.Edge - note the trap that
+// a directory named `vibesql-edge` builds a DIFFERENT project, Vibe.Edge.csproj -> Vibe.Edge.dll.
+// So this change is source hygiene, NOT a production remedy: fixing it closes nothing that is
+// currently live, and nobody should record card 394479 as closed on the strength of this hunk.
+// It is made anyway because an identical fail-open left in a sibling file is the thing someone
+// copies back into a shipping one.
+var loggerConfiguration = new LoggerConfiguration()
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .Enrich.WithEnvironmentName()
     .Enrich.WithThreadId()
-    .WriteTo.Console()
-    .WriteTo.Graylog(new GraylogSinkOptions
+    .WriteTo.Console();
+
+if (string.IsNullOrWhiteSpace(graylogHost))
+{
+    Console.WriteLine(
+        "WARNING: Logging:Graylog:HostnameOrAddress is not set. The Graylog sink will NOT be " +
+        "registered and VibeSQL.Edge will log to the console only. This is deliberate: the " +
+        "previous behaviour silently defaulted to localhost:12201 and discarded every log line.");
+}
+else
+{
+    loggerConfiguration.WriteTo.Graylog(new GraylogSinkOptions
     {
-        HostnameOrAddress = graylogHost ?? "localhost",
+        HostnameOrAddress = graylogHost,
         Port = int.TryParse(graylogPort, out var port) ? port : 12201,
         TransportType = TransportType.Udp,
         Facility = "VibeSQL.Edge"
-    })
-    .CreateLogger();
+    });
+}
+
+Log.Logger = loggerConfiguration.CreateLogger();
 
 builder.Host.UseSerilog();
 
@@ -64,7 +87,7 @@ builder.Services.AddSingleton<IDynamicSchemeRegistrar, DynamicSchemeRegistrar>()
 builder.Services.AddHostedService<EdgeAuthBackgroundService>();
 builder.Services.AddSingleton<IProviderRefreshTrigger>(sp => (EdgeAuthBackgroundService)sp.GetServices<IHostedService>().First(s => s is EdgeAuthBackgroundService));
 
-// Authentication — multi-provider OIDC via PolicyScheme
+// Authentication â€” multi-provider OIDC via PolicyScheme
 const string rejectScheme = "EdgeReject";
 builder.Services.AddAuthentication(options =>
 {
@@ -196,10 +219,10 @@ app.UseSerilogRequestLogging();
 app.UseCors();
 
 // Middleware pipeline order:
-// 1. Authentication — JWT validation via multi-provider PolicyScheme
-// 2. IdentityResolution — maps JWT claims ? federated identity ? vibe_user_id
-// 3. PermissionEnforcement — resolves role ? permission level, classifies SQL, gates access
-// 4. Routing + Authorization — ASP.NET Core endpoint routing and [Authorize] enforcement
+// 1. Authentication â€” JWT validation via multi-provider PolicyScheme
+// 2. IdentityResolution â€” maps JWT claims ? federated identity ? vibe_user_id
+// 3. PermissionEnforcement â€” resolves role ? permission level, classifies SQL, gates access
+// 4. Routing + Authorization â€” ASP.NET Core endpoint routing and [Authorize] enforcement
 app.UseAuthentication();
 app.UseMiddleware<IdentityResolutionMiddleware>();
 app.UseMiddleware<PermissionEnforcementMiddleware>();
