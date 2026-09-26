@@ -44,4 +44,11 @@
     <EmbeddedResource Include="Data\Migrations\**\*.sql" />
   </ItemGroup>
 
+  <!-- PAY-1862 (Jon 15:45): the install/convergence schema. Loaded at runtime by VibeSchemaInitializer
+       from this embedded copy, so the DDL has exactly one source of truth. Renaming or moving the file
+       without updating VibeSchemaInitializer.SchemaResourceName fails loudly at startup. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\scripts\base-schema.v2.sql" Link="scripts\base-schema.v2.sql" LogicalName="VibeSQL.Core.scripts.base-schema.v2.sql" />
+  </ItemGroup>
+
 </Project>
