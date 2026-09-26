@@ -60,10 +60,11 @@ public class VibeSchemaInitializerGuardTests : IAsyncLifetime
     }
 
     /// <summary>ExecuteAsync is protected on BackgroundService; invoking it directly is deterministic
-    /// (no polling on a background task) and, for gate 1, proves the early return.</summary>
-    private static async Task RunInitializerAsync(string? ownerConnectionString, CapturingLogger logger)
+    /// (no polling on a background task) and, for gate 1, proves the early return. The exit hook defaults
+    /// to Environment.Exit; tests pass a throwing hook so a failure is an assertion, not a host death.</summary>
+    private static async Task RunInitializerAsync(string? ownerConnectionString, CapturingLogger logger, Action<int>? exit = null)
     {
-        var initializer = new VibeSchemaInitializer(ownerConnectionString, logger);
+        var initializer = new VibeSchemaInitializer(ownerConnectionString, logger, exit);
         var method = typeof(VibeSchemaInitializer)
             .GetMethod("ExecuteAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         await (Task)method.Invoke(initializer, new object[] { CancellationToken.None })!;
@@ -280,5 +281,48 @@ public class VibeSchemaInitializerGuardTests : IAsyncLifetime
             "MUST-1: with a non-superuser owner under FORCE RLS the initializer must STILL run zero DDL");
         (await MarkerExistsAsync(adminCs)).Should().BeFalse("no marker may be written");
         (await VibeIndexCountAsync(adminCs)).Should().Be(indexesBefore, "no index may be created or dropped");
+    }
+
+    // ── D. MUST (NightHawk 65348 M2, BAPert 65351 item 2): two initializers on one fresh DB ────────
+
+    [Fact]
+    public async Task D_two_concurrent_initializers_on_a_fresh_db_provision_exactly_once()
+    {
+        var cs = await CreateDatabaseAsync($"guard_tworeplicas_{Guid.NewGuid():N}");
+
+        // Injectable exit hook: if either initializer hits the Environment.Exit path (as the loser would
+        // WITHOUT the advisory lock), throw so this test FAILS with a clear message instead of the test
+        // host disappearing - that is what makes the row a clean RED under the lock-removal mutant.
+        var exited = new ConcurrentQueue<int>();
+        void Exit(int code)
+        {
+            exited.Enqueue(code);
+            throw new InvalidOperationException(
+                "VIBE_INIT_EXIT: an initializer called the exit hook (code " + code +
+                ") - without the advisory lock the loser races the winner into a duplicate-object failure (NightHawk 65348 M2)");
+        }
+
+        var logs = new ConcurrentQueue<CapturingLogger>();
+        var l1 = new CapturingLogger();
+        var l2 = new CapturingLogger();
+        logs.Enqueue(l1);
+        logs.Enqueue(l2);
+
+        // Two replicas starting together.
+        await Task.WhenAll(
+            Task.Run(() => RunInitializerAsync(cs, l1, Exit)),
+            Task.Run(() => RunInitializerAsync(cs, l2, Exit)));
+
+        exited.Should().BeEmpty("neither replica may hit the exit path - the advisory lock makes the loser a no-op");
+        (await MarkerExistsAsync(cs)).Should().BeTrue("exactly one provisioning writes the marker");
+        (await SchemaExistsAsync(cs)).Should().BeTrue();
+
+        // Exactly ONE 'schema created' log across both replicas; the other takes the no-op path.
+        var createdCount = new[] { l1, l2 }
+            .SelectMany(l => l.Entries)
+            .Count(e => e.Message.Contains("vibe schema created"));
+        createdCount.Should().Be(1,
+            "with pg_advisory_xact_lock the loser blocks, then sees the committed table + marker and no-ops; " +
+            "without it BOTH try to create and one dies on a duplicate-object error (RED under the mutant)");
     }
 }

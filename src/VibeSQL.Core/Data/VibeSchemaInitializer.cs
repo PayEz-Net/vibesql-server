@@ -75,11 +75,17 @@ public sealed class VibeSchemaInitializer : BackgroundService
 
     private readonly string? _ownerConnectionString;
     private readonly ILogger<VibeSchemaInitializer> _logger;
+    private readonly Action<int> _exit;
 
-    public VibeSchemaInitializer(string? ownerConnectionString, ILogger<VibeSchemaInitializer> logger)
+    /// <summary>
+    /// <paramref name="exit"/> defaults to <c>Environment.Exit</c>; tests inject a hook so a RED row
+    /// fails the TEST rather than killing the test host (NightHawk 65348). Production never passes it.
+    /// </summary>
+    public VibeSchemaInitializer(string? ownerConnectionString, ILogger<VibeSchemaInitializer> logger, Action<int>? exit = null)
     {
         _ownerConnectionString = ownerConnectionString;
         _logger = logger;
+        _exit = exit ?? Environment.Exit;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -160,7 +166,7 @@ public sealed class VibeSchemaInitializer : BackgroundService
         {
             // Fail fast ONLY when we were asked to provision. A skip (gate 1, 3, 4) never reaches here.
             _logger.LogError(ex, "VIBESQL_SCHEMA_INIT: failed to initialize vibe schema; failing fast");
-            Environment.Exit(1);
+            _exit(1);
         }
     }
 
