@@ -20,14 +20,18 @@ namespace VibeSQL.Core.Tests;
 /// catches even an idempotent no-op (CREATE TABLE IF NOT EXISTS on an existing table) - the exact case a
 /// before/after catalog count would MISS.
 ///
-/// ROWS (BAPert 65301a):
-///   A. unset        -> skip, NO connection attempted, vibe schema absent.
-///   B. set + empty  -> provisions; a second run is a no-op (marker present, counts unchanged).
-///   C. set + populated (marker absent, vibe.documents has rows) -> ZERO DDL AND the marker is NOT written.
+/// ROWS:
+///   A.  unset        -> skip, NO connection attempted, vibe schema absent.
+///   B.  set + fresh (no vibe.documents) -> provisions; a second run is a no-op (marker, counts unchanged).
+///   C.  vibe.documents present WITHOUT our marker -> NOT OURS: ZERO DDL, no marker written.
+///   C2. MUST-1 (NightHawk 65322): the SAME as C but with a NON-SUPERUSER owner under FORCE RLS - the
+///       realistic install. The old row-count gate read a populated database as empty here; C2 is RED
+///       at the old head and GREEN after the catalog-only redesign.
 ///
-/// RED UNDER A MUTANT (proved, recorded in the commit): delete the IsPopulatedAsync gate in
-/// VibeSchemaInitializer.ExecuteAsync and row C FAILS - the full schema is re-issued (ddl_log non-empty)
-/// and the marker is written.
+/// RED UNDER A MUTANT (proved, recorded in the commit): restore gate 3's row-count read
+/// (`SELECT EXISTS (SELECT 1 FROM vibe.documents LIMIT 1)`) and run it as the non-superuser owner -
+/// C2 FAILS, because FORCE RLS filters the owner and the read reports empty, so the initializer would
+/// re-provision. The catalog-only gate is what makes it GREEN.
 ///
 /// CI: tagged Integration and REQUIRES DOCKER. Where docker is absent, filter it out with
 ///   dotnet test --filter "Category!=Integration"
@@ -104,13 +108,16 @@ public class VibeSchemaInitializerGuardTests : IAsyncLifetime
         "SELECT EXISTS (SELECT 1 FROM vibe.schema_meta WHERE key = 'initialized');");
 
     /// <summary>Install the DDL-observability objects. ddl_command_start fires before a utility command
-    /// executes, so a skipped IF NOT EXISTS is still recorded.</summary>
+    /// executes, so a skipped IF NOT EXISTS is still recorded. The log function is SECURITY DEFINER so it
+    /// records even when the invoking role (a non-superuser owner in row C2) cannot write test_obs itself -
+    /// otherwise the trigger would ERROR and the initializer's Environment.Exit(1) would crash the host
+    /// instead of producing a clean assertion.</summary>
     private static async Task InstallDdlCaptureAsync(string cs)
     {
         await ExecAsync(cs, """
             CREATE SCHEMA IF NOT EXISTS test_obs;
             CREATE TABLE IF NOT EXISTS test_obs.ddl_log (id SERIAL PRIMARY KEY, tag TEXT NOT NULL, at TIMESTAMPTZ DEFAULT NOW());
-            CREATE OR REPLACE FUNCTION test_obs.log_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$
+            CREATE OR REPLACE FUNCTION test_obs.log_ddl() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS $$
             BEGIN
                 INSERT INTO test_obs.ddl_log(tag) VALUES (tg_tag);
             END $$;
@@ -173,15 +180,15 @@ public class VibeSchemaInitializerGuardTests : IAsyncLifetime
         (await VibeIndexCountAsync(cs)).Should().Be(indexesAfterFirst, "a second run must change nothing");
     }
 
-    // ── C. set + populated -> ZERO DDL, no marker  (RED under the guard-removal mutant) ──────────
+    // ── C. set + vibe.documents present WITHOUT our marker -> NOT OURS: zero DDL, no marker ──────
 
     [Fact]
-    public async Task C_populated_database_runs_zero_ddl_and_writes_no_marker()
+    public async Task C_a_documents_table_without_our_marker_is_not_ours_zero_ddl()
     {
-        var cs = await CreateDatabaseAsync($"guard_populated_{Guid.NewGuid():N}");
+        var cs = await CreateDatabaseAsync($"guard_notours_{Guid.NewGuid():N}");
 
-        // Get a real schema in place, then make it look like a live database: remove the provisioning
-        // marker and put a row in vibe.documents. This is the state prod/93 is in.
+        // Provision for real once (so we have the true schema + marker), then remove the marker and put
+        // a tenant row in. This is exactly the state a live database left by someone else is in.
         await RunInitializerAsync(cs, new CapturingLogger());
         await ExecAsync(cs, "DELETE FROM vibe.schema_meta WHERE key = 'initialized';");
         await ExecAsync(cs, """
@@ -196,16 +203,82 @@ public class VibeSchemaInitializerGuardTests : IAsyncLifetime
         var logger = new CapturingLogger();
         await RunInitializerAsync(cs, logger);
 
-        logger.Entries.Should().Contain(e => e.Message.Contains("database is POPULATED"),
-            "gate 3 must log the populated refusal");
+        logger.Entries.Should().Contain(e => e.Message.Contains("NO DDL will run") || e.Message.Contains("NOT created by this initializer"),
+            "gate 4 must log that the database is not ours");
         (await DdlCountAsync(cs)).Should().Be(0,
-            "BAPert's hard rule: on a POPULATED database the startup path executes ZERO DDL - a plain " +
-            "CREATE at boot would lock the partitioned vibe.documents");
+            "BAPert's hard rule: an existing vibe.documents without our marker is not ours - ZERO DDL");
         (await MarkerExistsAsync(cs)).Should().BeFalse(
-            "the marker must NOT be written when the guard refuses to provision");
+            "the marker must NOT be written when we refuse to provision");
         (await VibeIndexCountAsync(cs)).Should().Be(indexesBefore, "no index may be created or dropped");
         (await ScalarAsync<long>(cs,
             "SELECT count(*) FROM vibe.documents WHERE collection = 'agent_mail';"))
             .Should().Be(1, "the existing row must be untouched");
+    }
+
+    // ── C2. MUST-1 (NightHawk 65322): the RLS hole. A NON-SUPERUSER owner + FORCE RLS. ─────────────
+
+    [Fact]
+    public async Task C2_non_superuser_owner_with_force_rls_still_sees_not_ours_zero_ddl()
+    {
+        var db = $"guard_rls_{Guid.NewGuid():N}";
+
+        // CREATE DATABASE and the test-only DDL capture must run as the container SUPERUSER.
+        var adminCs = await CreateDatabaseAsync(db);
+
+        // A dedicated, NON-superuser owner role - what a compose/.env install or an operator-set
+        // OwnerConnectionString would actually use. This is the role NightHawk's measurement used.
+        const string role = "vibe_owner";
+        const string pw = "vibe_owner_pw";
+        await ExecAsync(adminCs, $"CREATE ROLE {role} LOGIN PASSWORD '{pw}';");
+        await ExecAsync(adminCs, $"GRANT ALL ON DATABASE \"{db}\" TO {role};");
+        await ExecAsync(adminCs, $"GRANT ALL ON SCHEMA public TO {role};");
+
+        var ownerCs = new NpgsqlConnectionStringBuilder(adminCs)
+        {
+            Username = role,
+            Password = pw
+        }.ConnectionString;
+
+        // Provision AS THE OWNER, so every object is owned by the non-superuser role (FORCE RLS then
+        // applies to it). This is the realistic install.
+        var first = new CapturingLogger();
+        await RunInitializerAsync(ownerCs, first);
+
+        // Tenant rows inserted by the SUPERUSER (bypasses RLS), then delete the marker.
+        await ExecAsync(adminCs, """
+            INSERT INTO vibe.documents (client_id, collection, table_name, data)
+            VALUES (1, 'agent_mail', 'agent_mail_inbox', '{"id":1}'::jsonb),
+                   (8, 'agent_mail', 'agent_mail_inbox', '{"id":2}'::jsonb);
+            """);
+        await ExecAsync(adminCs, "DELETE FROM vibe.schema_meta WHERE key = 'initialized';");
+
+        // Sanity: as the owner with app.client_id unset, the OLD row-count read is BLIND (sees no rows)
+        // but the CATALOG read is correct (table exists). This is the hole MUST-1 named.
+        await using (var owner = new NpgsqlConnection(ownerCs))
+        {
+            await owner.OpenAsync();
+            await using var blind = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM vibe.documents LIMIT 1);", owner);
+            var seesRow = (bool)(await blind.ExecuteScalarAsync())!;
+            seesRow.Should().BeFalse(
+                "MUST-1: with FORCE RLS and app.client_id unset, the owner's row-count read sees NOTHING " +
+                "even though the table holds tenant rows - which is exactly why the gate must not use it");
+        }
+
+        // The DDL capture must be created by the superuser and readable by the test connection (adminCs).
+        await InstallDdlCaptureAsync(adminCs);
+        await ResetDdlLogAsync(adminCs);
+
+        var indexesBefore = await VibeIndexCountAsync(adminCs);
+        var logger = new CapturingLogger();
+
+        // Run the initializer AS THE OWNER (what a real install does).
+        await RunInitializerAsync(ownerCs, logger);
+
+        logger.Entries.Should().Contain(e => e.Message.Contains("NO DDL will run") || e.Message.Contains("NOT created by this initializer"),
+            "the catalog gate must catch this: vibe.documents exists, marker absent -> not ours");
+        (await DdlCountAsync(adminCs)).Should().Be(0,
+            "MUST-1: with a non-superuser owner under FORCE RLS the initializer must STILL run zero DDL");
+        (await MarkerExistsAsync(adminCs)).Should().BeFalse("no marker may be written");
+        (await VibeIndexCountAsync(adminCs)).Should().Be(indexesBefore, "no index may be created or dropped");
     }
 }

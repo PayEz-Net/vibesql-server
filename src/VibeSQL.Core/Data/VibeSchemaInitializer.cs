@@ -20,15 +20,31 @@ namespace VibeSQL.Core.Data;
 ///   * <c>vibe.documents</c> is LIST-PARTITIONED and prod-sized, so a plain CREATE INDEX at boot would
 ///     LOCK it. BAPert's hard rule: on a POPULATED database the startup path executes NO DDL.
 ///
-/// THE GATE, in order:
+/// THE GATE, in order (REDESIGNED for MUST-1, NightHawk 65322 / BAPert 65327):
 ///   1. <c>VibeSql:Schema:OwnerConnectionString</c> unset -> SKIP entirely (no connection attempted).
 ///      This is the state of every AKS/93 deployment, so that image is unaffected. Logged once.
-///   2. Set, but the database is already provisioned (the explicit marker row exists) -> no-op.
-///   3. Set, marker absent, but <c>vibe.documents</c> EXISTS WITH ROWS -> POPULATED: run NO DDL and
-///      log the pending work as "apply via AKS/migrations". The owner credential enables provisioning;
-///      it does not license locking a live table.
-///   4. Set, and the database is genuinely EMPTY -> provision: base-schema.v2.sql + the system-user
-///      seed, then write the marker.
+///   2. <c>vibe.documents</c> ABSENT (to_regclass IS NULL) -> genuinely FRESH -> provision.
+///   3. <c>vibe.documents</c> PRESENT + the explicit marker row present -> already provisioned -> no-op.
+///   4. <c>vibe.documents</c> PRESENT + NO marker -> NOT OURS: log at Error, run ZERO DDL, write NO
+///      marker. A half-provisioned state cannot exist because provisioning is atomic (below), so an
+///      existing table without our marker is somebody else's database.
+///
+/// *** WHY THE OLD GATE WAS WRONG (MUST-1): it read a ROW COUNT to decide emptiness, and that read is
+/// blind. *** base-schema.v2 enables AND FORCES row-level security on vibe.documents, and FORCE filters
+/// the table OWNER too. A gate-3 <c>SELECT EXISTS (SELECT 1 FROM vibe.documents LIMIT 1)</c> on the
+/// owner connection, with app.client_id unset, sees only client_id = 0 rows - so a LIVE database with
+/// tenant rows reads as EMPTY and gate 4 would run the whole schema (non-concurrent index builds on the
+/// partitioned table = the lock BAPert's hard rule forbids). MEASURED (NightHawk, postgres:16, non-superuser
+/// owner, 2 tenant rows): as superuser populated=true; as the owner populated=FALSE. Emptiness is now
+/// decided from the CATALOG ONLY (does vibe.documents exist), so no row is ever read and RLS cannot
+/// fool it. The marker read touches vibe.schema_meta, which is not tenant-scoped and not RLS-forced.
+///
+/// ATOMICITY (BAPert 65327 item 2): schema + seed + marker run in ONE transaction. The schema has no
+/// CONCURRENTLY (correct on a fresh DB), so all of it is transactional DDL; a failure rolls the whole
+/// thing back and no half-provisioned state exists.
+///
+/// CONCURRENCY (SHOULD-1 -> BAPert 65327 item 3): <c>pg_advisory_xact_lock</c> around the gates, held
+/// for the transaction, so two replicas starting together cannot both provision.
 ///
 /// The owner connection is used ONLY here and disposed when done. It is never registered in DI for
 /// request paths.
@@ -83,92 +99,98 @@ public sealed class VibeSchemaInitializer : BackgroundService
             await using var connection = new NpgsqlConnection(_ownerConnectionString);
             await connection.OpenAsync(stoppingToken);
 
-            // GATE 2: already provisioned -> no-op.
-            if (await IsMarkedInitializedAsync(connection, stoppingToken))
+            // MUST-1 (NightHawk 65322) / BAPert 65327: schema + seed + marker in ONE transaction, with
+            // pg_advisory_xact_lock held for it, so two replicas cannot both provision and a failure
+            // leaves NO half-provisioned state.
+            await using var tx = await connection.BeginTransactionAsync(stoppingToken);
+
+            await using (var lockCmd = new NpgsqlCommand(
+                "SELECT pg_advisory_xact_lock(hashtext('vibesql_schema_init'));", connection, tx))
             {
-                _logger.LogInformation(
-                    "VIBESQL_SCHEMA_INIT: database already provisioned (vibe.schema_meta marker present); nothing to do.");
+                await lockCmd.ExecuteNonQueryAsync(stoppingToken);
+            }
+
+            // GATES 2-3: emptiness is CATALOG-ONLY. No row is ever read, so FORCE RLS cannot make a
+            // populated database look empty (MUST-1).
+            var documentsExists = await TableExistsAsync(connection, tx, "vibe", "documents", stoppingToken);
+
+            if (documentsExists)
+            {
+                if (await IsMarkedInitializedAsync(connection, tx, stoppingToken))
+                {
+                    // GATE 3: already provisioned -> no-op.
+                    await tx.RollbackAsync(stoppingToken);
+                    _logger.LogInformation(
+                        "VIBESQL_SCHEMA_INIT: database already provisioned (vibe.schema_meta marker present); nothing to do.");
+                    return;
+                }
+
+                // GATE 4: vibe.documents exists WITHOUT our marker -> NOT OURS. Zero DDL, no marker.
+                await tx.RollbackAsync(stoppingToken);
+                _logger.LogError(
+                    "VIBESQL_SCHEMA_INIT: vibe.documents EXISTS but the initialization marker is absent - " +
+                    "this database was NOT created by this initializer. NO DDL will run and no marker will be " +
+                    "written. Provision it deliberately, or apply pending schema changes via AKS/migrations.");
                 return;
             }
 
-            // GATE 3: populated -> NEVER auto-DDL. Report and stop.
-            if (await IsPopulatedAsync(connection, stoppingToken))
-            {
-                _logger.LogWarning(
-                    "VIBESQL_SCHEMA_INIT: database is POPULATED (vibe.documents has rows) but not marked " +
-                    "initialized. NO DDL will run: a plain CREATE at boot would lock the partitioned " +
-                    "vibe.documents. Apply pending schema changes via AKS/migrations.");
-                return;
-            }
-
-            // GATE 4: genuinely empty -> provision.
+            // GATE 2: vibe.documents ABSENT -> genuinely FRESH -> provision, all in this transaction.
             var schemaSql = LoadEmbeddedSchema();
-            await using (var command = new NpgsqlCommand(schemaSql, connection))
+            await using (var command = new NpgsqlCommand(schemaSql, connection, tx))
             {
                 await command.ExecuteNonQueryAsync(stoppingToken);
             }
-            _logger.LogInformation("VIBESQL_SCHEMA_INIT: vibe schema created (tables, RLS, indexes) on an empty database");
+            _logger.LogInformation("VIBESQL_SCHEMA_INIT: vibe schema created (tables, RLS, indexes) on a fresh database");
 
-            await using (var seed = new NpgsqlCommand(SystemUserSeedSql, connection))
+            await using (var seed = new NpgsqlCommand(SystemUserSeedSql, connection, tx))
             {
                 var seeded = await seed.ExecuteNonQueryAsync(stoppingToken);
                 _logger.LogInformation("VIBESQL_SCHEMA_INIT: system user seed complete ({Seeded} tenant(s) provisioned)", seeded);
             }
 
-            await using (var mark = new NpgsqlCommand(MarkerSql, connection))
+            await using (var mark = new NpgsqlCommand(MarkerSql, connection, tx))
             {
                 await mark.ExecuteNonQueryAsync(stoppingToken);
             }
+
+            await tx.CommitAsync(stoppingToken);
             _logger.LogInformation("VIBESQL_SCHEMA_INIT: initialization marker written (vibe.schema_meta.initialized)");
         }
         catch (Exception ex)
         {
-            // Fail fast ONLY when we were asked to provision. A skip (gate 1-3) never reaches here.
+            // Fail fast ONLY when we were asked to provision. A skip (gate 1, 3, 4) never reaches here.
             _logger.LogError(ex, "VIBESQL_SCHEMA_INIT: failed to initialize vibe schema; failing fast");
             Environment.Exit(1);
         }
     }
 
-    /// <summary>True when the explicit marker row exists. Deliberately not "the ledger table is absent".</summary>
-    private static async Task<bool> IsMarkedInitializedAsync(NpgsqlConnection connection, CancellationToken ct)
+    /// <summary>Catalog-only table existence (pg_class). Does not read any row, so RLS cannot affect it.</summary>
+    private static async Task<bool> TableExistsAsync(
+        NpgsqlConnection connection, NpgsqlTransaction tx, string schema, string table, CancellationToken ct)
     {
         const string sql = @"
             SELECT EXISTS (
-                SELECT 1
-                  FROM information_schema.tables
-                 WHERE table_schema = 'vibe' AND table_name = 'schema_meta'
-            ) AND EXISTS (
                 SELECT 1 FROM pg_catalog.pg_class c
                   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = 'vibe' AND c.relname = 'schema_meta'
+                 WHERE n.nspname = @schema AND c.relname = @table
             );";
-        await using var cmd = new NpgsqlCommand(sql, connection);
-        var tableExists = (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
-        if (!tableExists)
+        await using var cmd = new NpgsqlCommand(sql, connection, tx);
+        cmd.Parameters.AddWithValue("schema", schema);
+        cmd.Parameters.AddWithValue("table", table);
+        return (bool)(await cmd.ExecuteScalarAsync(ct) ?? false);
+    }
+
+    /// <summary>True when the explicit marker row exists. Reads vibe.schema_meta, which is NOT
+    /// tenant-scoped and carries no RLS policy - so this read is unaffected by MUST-1's FORCE-RLS hole.</summary>
+    private static async Task<bool> IsMarkedInitializedAsync(
+        NpgsqlConnection connection, NpgsqlTransaction tx, CancellationToken ct)
+    {
+        if (!await TableExistsAsync(connection, tx, "vibe", "schema_meta", ct))
             return false;
 
         await using var read = new NpgsqlCommand(
-            "SELECT EXISTS (SELECT 1 FROM vibe.schema_meta WHERE key = 'initialized');", connection);
+            "SELECT EXISTS (SELECT 1 FROM vibe.schema_meta WHERE key = 'initialized');", connection, tx);
         return (bool)(await read.ExecuteScalarAsync(ct) ?? false);
-    }
-
-    /// <summary>True when vibe.documents exists AND holds at least one row. Absence of the table is NOT populated.</summary>
-    private static async Task<bool> IsPopulatedAsync(NpgsqlConnection connection, CancellationToken ct)
-    {
-        const string existsSql = @"
-            SELECT EXISTS (
-                SELECT 1 FROM pg_catalog.pg_class c
-                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                 WHERE n.nspname = 'vibe' AND c.relname = 'documents'
-            );";
-        await using (var exists = new NpgsqlCommand(existsSql, connection))
-        {
-            if ((bool)(await exists.ExecuteScalarAsync(ct) ?? false) == false)
-                return false;   // no table -> not populated -> the empty path provisions it
-        }
-
-        await using var count = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM vibe.documents LIMIT 1);", connection);
-        return (bool)(await count.ExecuteScalarAsync(ct) ?? false);
     }
 
     private static string LoadEmbeddedSchema()
