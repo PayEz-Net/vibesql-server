@@ -4,6 +4,7 @@ using Serilog.Events;
 using Serilog.Sinks.Graylog;
 using Serilog.Sinks.Graylog.Core.Transport;
 using VibeSQL.Core.Models;
+using VibeSQL.Core.Data;
 using VibeSQL.Core.Query;
 using VibeSQL.Server.Middleware;
 
@@ -53,7 +54,21 @@ var secretConfig = new VibeContainerSecretConfig { Secret = containerSecret };
 builder.Services.AddSingleton(secretConfig);
 builder.Services.AddHostedService<JwksCache>();
 builder.Services.AddSingleton(sp => sp.GetServices<IHostedService>().OfType<JwksCache>().First());
-Log.Information("VIBESQL_STARTUP: Container secret auth and JWKS cache configured");
+
+// PAY-1865 (Jon 15:45, BAPert 65265 option (b)): schema AUTO-PROVISION for a fresh self-hosted install.
+// The gate is the OPTIONAL owner connection string: UNSET means skip entirely, which is the state of
+// every AKS/93 deployment, so that image is unaffected and no environment sniffing is needed. Set only
+// by a fresh install (compose/.env), where it provisions an EMPTY database and is a no-op thereafter.
+// The owner credential is used ONLY by this initializer and never registered for request paths; and
+// even when set, the initializer runs NO DDL against a populated database (a plain CREATE would lock
+// the partitioned vibe.documents).
+var schemaOwnerConnection = builder.Configuration["VibeSql:Schema:OwnerConnectionString"];
+builder.Services.AddSingleton<IHostedService>(sp =>
+    new VibeSchemaInitializer(
+        schemaOwnerConnection,
+        sp.GetRequiredService<ILogger<VibeSchemaInitializer>>()));
+Log.Information("VIBESQL_STARTUP: Container secret auth and JWKS cache configured; schema auto-provision {State}",
+    string.IsNullOrWhiteSpace(schemaOwnerConnection) ? "SKIPPED (no owner connection)" : "ENABLED");
 
 // ========================================
 // VibeSQL Core Query Services
